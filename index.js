@@ -122,7 +122,7 @@ function buildCharMap(cmapMap) {
     const charMap = {};
     for (const [glyphId, unicodeHex] of Object.entries(cmapMap)) {
         const padded = glyphId.toUpperCase();
-        const char = String.fromCharCode(parseInt(unicodeHex, 16));
+        const char = decodeUnicodeHex(unicodeHex);
         charMap[padded] = char;
     }
     return charMap;
@@ -136,18 +136,77 @@ function getCMapCodeLengths(cmapMap) {
     return Array.from(lengths).sort((a, b) => b - a);
 }
 
+function decodeUnicodeHex(unicodeHex) {
+    const normalized = (unicodeHex || '').toUpperCase();
+    if (!normalized || normalized.length % 4 !== 0) {
+        return '';
+    }
+
+    let out = '';
+    for (let i = 0; i < normalized.length; i += 4) {
+        const chunk = normalized.slice(i, i + 4);
+        out += String.fromCharCode(parseInt(chunk, 16));
+    }
+    return out;
+}
+
+function extractInlineDictionary(str, startIdx) {
+    let depth = 0;
+    let i = startIdx;
+
+    while (i < str.length - 1) {
+        const two = str.slice(i, i + 2);
+        if (two === '<<') {
+            depth++;
+            i += 2;
+            continue;
+        }
+        if (two === '>>') {
+            depth--;
+            i += 2;
+            if (depth === 0) {
+                return str.slice(startIdx, i);
+            }
+            continue;
+        }
+        i++;
+    }
+    throw new Error("Unterminated inline dictionary");
+}
+
+function resolveDictOrRef(objStr, key) {
+    const keyIdx = objStr.indexOf(key);
+    if (keyIdx === -1) return null;
+
+    const afterKey = objStr.slice(keyIdx + key.length).trimStart();
+    const refMatch = afterKey.match(/^(\d+\s+\d+\s+R)/);
+    if (refMatch) {
+        return { type: 'ref', value: refMatch[1] };
+    }
+
+    if (afterKey.startsWith('<<')) {
+        const dictStart = keyIdx + key.length + (objStr.slice(keyIdx + key.length).length - afterKey.length);
+        const dict = extractInlineDictionary(objStr, dictStart);
+        return { type: 'dict', value: dict };
+    }
+
+    return null;
+}
+
 function findFontAndCMap(buffer, pdfString, pageObjStr) {
-    const resMatch = pageObjStr.match(/\/Resources\s+(\d+\s+\d+\s+R)/);
-    if (!resMatch) throw new Error("No /Resources found in page object");
-    
-    const resRef = resMatch[1];
-    const resObj = getObject(buffer, pdfString, resRef);
-    
-    const fontMatch = resObj.match(/\/Font\s+(\d+\s+\d+\s+R)/);
-    if (!fontMatch) throw new Error("No /Font found in resources");
-    
-    const fontDictRef = fontMatch[1];
-    const fontDictObj = getObject(buffer, pdfString, fontDictRef);
+    const resEntry = resolveDictOrRef(pageObjStr, '/Resources');
+    if (!resEntry) throw new Error("No /Resources found in page object");
+
+    const resObj = resEntry.type === 'ref'
+        ? getObject(buffer, pdfString, resEntry.value)
+        : resEntry.value;
+
+    const fontEntry = resolveDictOrRef(resObj, '/Font');
+    if (!fontEntry) throw new Error("No /Font found in resources");
+
+    const fontDictObj = fontEntry.type === 'ref'
+        ? getObject(buffer, pdfString, fontEntry.value)
+        : fontEntry.value;
     
     const fonts = {};
     const fontNameMatch = fontDictObj.match(/\/(\w+)\s+(\d+\s+\d+\s+R)/g);
@@ -157,7 +216,12 @@ function findFontAndCMap(buffer, pdfString, pageObjStr) {
             const fontName = parts[0].replace('/', '');
             const fontRef = parts.slice(1).join(' ');
             const fontObj = getObject(buffer, pdfString, fontRef);
-            const toUnicodeRef = extractValue(fontObj, '/ToUnicode');
+            let toUnicodeRef;
+            try {
+                toUnicodeRef = extractValue(fontObj, '/ToUnicode');
+            } catch {
+                continue;
+            }
             
             const cmapObj = getObject(buffer, pdfString, toUnicodeRef, true);
             const cmapLen = resolveLength(buffer, pdfString, cmapObj);
@@ -171,6 +235,23 @@ function findFontAndCMap(buffer, pdfString, pageObjStr) {
         }
     }
     return fonts;
+}
+
+function decodePdfLiteralString(token) {
+    let inner = token;
+    if (inner.startsWith('(') && inner.endsWith(')')) {
+        inner = inner.slice(1, -1);
+    }
+
+    return inner
+        .replace(/\\\\/g, '\\')
+        .replace(/\\\(/g, '(')
+        .replace(/\\\)/g, ')')
+        .replace(/\\n/g, '\n')
+        .replace(/\\r/g, '\r')
+        .replace(/\\t/g, '\t')
+        .replace(/\\b/g, '\b')
+        .replace(/\\f/g, '\f');
 }
 
 function translateText(cmapMap, hexString) {
@@ -187,7 +268,7 @@ function translateText(cmapMap, hexString) {
             if (idx + len > cleaned.length) continue;
             const code = cleaned.slice(idx, idx + len);
             if (cmapMap[code]) {
-                result += String.fromCodePoint(parseInt(cmapMap[code], 16));
+                result += decodeUnicodeHex(cmapMap[code]);
                 idx += len;
                 matched = true;
                 break;
@@ -206,27 +287,58 @@ function translateText(cmapMap, hexString) {
 function processContentStream(decompressed, fonts) {
     const lines = decompressed.split('\n');
     let currentFont = null;
-    const finalLines = [];
+    let currentY = null;
+    const groupedLines = [];
+
+    function appendTextChunk(text) {
+        if (!text) return;
+
+        if (groupedLines.length === 0) {
+            groupedLines.push({ y: currentY, text });
+            return;
+        }
+
+        const last = groupedLines[groupedLines.length - 1];
+        if (
+            typeof currentY === 'number' &&
+            typeof last.y === 'number' &&
+            Math.abs(last.y - currentY) <= 0.5
+        ) {
+            last.text += text;
+        } else {
+            groupedLines.push({ y: currentY, text });
+        }
+    }
     
     for (const line of lines) {
         const fontMatch = line.match(/\/F(\d+)\s+(\d+)\s+Tf/);
         if (fontMatch) {
             currentFont = 'F' + fontMatch[1];
         }
+
+        const tmMatch = line.match(/1\s+0\s+0\s+1\s+([\-\d.]+)\s+([\-\d.]+)\s+Tm/);
+        if (tmMatch) {
+            currentY = parseFloat(tmMatch[2]);
+        }
         
         const tjArrayMatch = line.match(/\[(.*?)\]\s*TJ/);
         if (tjArrayMatch && currentFont && fonts[currentFont]) {
-            const hexParts = tjArrayMatch[1].match(/<([0-9A-Fa-f]+)>/g) || [];
+            const parts = tjArrayMatch[1].match(/<([0-9A-Fa-f]+)>|\((?:\\.|[^\\)])*\)/g) || [];
             let combined = '';
 
-            for (const hex of hexParts) {
-                const translated = translateText(fonts[currentFont].cmapMap, hex);
+            for (const part of parts) {
+                let translated = '';
+                if (part.startsWith('<')) {
+                    translated = translateText(fonts[currentFont].cmapMap, part);
+                } else {
+                    translated = decodePdfLiteralString(part);
+                }
                 combined += translated;
-                console.log(`Font ${currentFont}: ${hex} -> "${translated}"`);
+                console.log(`Font ${currentFont}: ${part} -> "${translated}"`);
             }
 
             if (combined) {
-                finalLines.push(combined);
+                appendTextChunk(combined);
             }
             continue;
         }
@@ -236,11 +348,17 @@ function processContentStream(decompressed, fonts) {
             const hex = tjSingleMatch[1];
             const translated = translateText(fonts[currentFont].cmapMap, hex);
             console.log(`Font ${currentFont}: ${hex} -> "${translated}"`);
-            finalLines.push(translated);
+            appendTextChunk(translated);
         }
     }
 
-    return finalLines.join('\n');
+    return groupedLines
+        .map(item => item.text)
+        .join('\n')
+        .split('\n')
+        .map(line => line.trimEnd())
+        .filter(line => line.length > 0)
+        .join('\n');
 }
 
 function extractAndTranslate(filePath) {
