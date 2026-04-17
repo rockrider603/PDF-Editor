@@ -4,7 +4,7 @@ const path = require('path');
 const { findRootRef, extractFirstKid } = require('./core/pdfPageTreeResolver');
 const { getObject, extractValue, resolveLength, decompressStream } = require('./core/pdfObjectReader');
 const { findFontAndCMap } = require('./text/pdfFontCMapResolver');
-const { processContentStream } = require('./text/pdfContentStreamTextProcessor');
+const { processContentStream, detectParasAndHeaders } = require('./text/pdfContentStreamTextProcessor');
 const { findXObjects, processImages } = require('./images/pdfImageXObjectProcessor');
 
 function extractAndTranslatePdf(filePath) {
@@ -49,10 +49,17 @@ function extractAndTranslatePdf(filePath) {
         processImages(images);
 
         console.log('\n--- TRANSLATED TEXT ---');
-        const finalText = processContentStream(decompressed, fonts);
+        const textElements = processContentStream(decompressed, fonts);  // Now returns array of objects
+
+        // Display the text
+        textElements.forEach(el => console.log(el.text));
 
         console.log('\n--- FINAL PDF CONTENT ---');
+        const finalText = textElements.map(el => el.text).join('\n');
         console.log(finalText || '[No translatable text found]');
+
+        // Now pass the ARRAY of objects, not just text
+        detectParasAndHeaders(textElements);
     } catch (err) {
         console.error(`\n[!] ERROR: ${err.message}`);
     }
