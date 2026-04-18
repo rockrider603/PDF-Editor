@@ -1,4 +1,4 @@
-const { getObject } = require('../core/pdfObjectReader');
+const { getObject, resolveLength } = require('../core/pdfObjectReader');
 const { resolveDictOrRef } = require('../core/pdfDictionaryResolver');
 const zlib = require('zlib');
 const fs = require('fs');
@@ -88,10 +88,12 @@ function extractAllImageData(buffer, pdfString, objectNumbers) {
             if (objBuffer[start] === 0x0d) start += 2; // \r\n
             else if (objBuffer[start] === 0x0a) start += 1; // \n
 
-            let length = metadata.length || 0;
-            if (objStr.includes('/Length')) {
-                const lenMatch = objStr.match(/\/Length\s+(\d+)/);
-                if (lenMatch) length = parseInt(lenMatch[1]);
+            let length;
+            try {
+                length = resolveLength(buffer, pdfString, objBuffer);
+            } catch (err) {
+                // fallback to metadata length if resolveLength fails
+                length = metadata.length || 0;
             }
 
             const streamData = objBuffer.slice(start, start + length);

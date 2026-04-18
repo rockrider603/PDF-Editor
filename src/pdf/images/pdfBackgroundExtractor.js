@@ -129,20 +129,17 @@ function parsePaintOperations(contentStream) {
 
         // Capture transformation matrix:  a b c d e f cm
         const cmMatch = trimmed.match(
-            /^([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+cm$/
+            /([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+cm\b/
         );
         if (cmMatch) {
             pendingMatrix = cmMatch.slice(1).map(Number);
-            continue;
         }
 
         // Paint operation:  /XObjName Do
-        const doMatch = trimmed.match(/^\/([^\s]+)\s+Do$/);
+        const doMatch = trimmed.match(/\/([^\s/]+)\s+Do\b/);
         if (doMatch) {
             operations.push({
                 name: doMatch[1],
-                // Use the matrix that was set immediately before this Do; fall
-                // back to the current CTM if no explicit cm came first.
                 matrix: pendingMatrix ? [...pendingMatrix] : [...currentMatrix]
             });
             pendingMatrix = null;

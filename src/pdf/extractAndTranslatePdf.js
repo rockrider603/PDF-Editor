@@ -1,7 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 
-const { connectDB, client } = require('./core/db');
 const { scanForImages } = require('./images/pdfImageXObjectProcessor');
 const { storeImages, storeBackgroundImage } = require('./images/pdfImageStorage');
 const { extractBackgroundImage } = require('./images/pdfBackgroundExtractor');
@@ -22,8 +21,6 @@ const { processContentStream, detectParasAndHeaders } = require('./text/pdfConte
  */
 async function extractAndTranslatePdf(filePath) {
     try {
-        const collection = await connectDB();
-
         console.log(`--- Starting Analysis: ${path.basename(filePath)} ---\n`);
         const buffer = fs.readFileSync(filePath);
         const pdfString = buffer.toString('binary');
@@ -72,22 +69,17 @@ async function extractAndTranslatePdf(filePath) {
 
         // 3. Image Extraction and Storage
         const imagesData = scanForImages(buffer, pdfString);
-        await storeImages(imagesData, collection);
+        storeImages(imagesData);
 
         // 4. Background Image Extraction (first page only)
         // We pass `pageObj` and the decompressed content stream so the extractor
         // can cross-reference painted XObjects with page dimensions without
         // re-reading from disk.
         const bgImage = extractBackgroundImage(buffer, pdfString, pageObj, decompressed);
-        await storeBackgroundImage(bgImage, collection);
+        storeBackgroundImage(bgImage);
 
     } catch (err) {
         console.error(`\n[!] ERROR: ${err.message}`);
-    } finally {
-        if (client) {
-            await client.close();
-            console.log('\n[Note] MongoDB connection closed.');
-        }
     }
 }
 

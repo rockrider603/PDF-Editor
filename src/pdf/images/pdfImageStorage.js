@@ -5,12 +5,12 @@ const crypto = require('crypto');
 // ─────────────────────────────────────────────────────────────────────────────
 // Image Storage Module
 //
-// Handles all persistence concerns for extracted PDF images:
-//   • File-system writes (with SHA-256 deduplication)
-//   • Optional MongoDB upsert via a pre-connected collection
+// Handles persistence for extracted PDF images:
+//   • File-system writes to `uploads/` (with SHA-256 deduplication)
+//   • Metadata for each image is saved as a companion .json file.
 //
 // Background images are stored with a "bg_" filename prefix so they can be
-// identified visually in the uploads directory without opening the files.
+// identified visually.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -39,46 +39,37 @@ function ensureUploadsDir() {
 }
 
 /**
- * Writes a single image to disk and optionally upserts its metadata into
- * MongoDB.
+ * Writes a single image and its metadata JSON to disk.
  *
- * Skips the file write if an identical file (same SHA-256) already exists,
- * making the operation idempotent for repeated runs against the same PDF.
+ * Skips the file write if an identical file (same SHA-256) already exists.
  *
  * @param {Buffer}      bytes      - Raw image bytes ready to write.
+ * @param {string}      hash       - SHA-256 hash of the bytes.
  * @param {string}      fileName   - Destination file name (with extension).
- * @param {object}      metadata   - { width, height, filter } from the PDF object.
- * @param {number}      objNum     - PDF object number (for logging and DB record).
- * @param {object|null} collection - MongoDB collection, or null to skip DB.
- * @param {object}      [extra={}] - Additional fields merged into the DB document.
+ * @param {object}      metadata   - { width, height, filter, length } from the PDF object.
+ * @param {number}      objNum     - PDF object number (for logging).
+ * @param {object}      [extra={}] - Additional fields for the JSON metadata.
  */
-async function persistImage(bytes, fileName, metadata, objNum, collection, extra = {}) {
+function persistImage(bytes, hash, fileName, metadata, objNum, extra = {}) {
     const uploadsPath = ensureUploadsDir();
     const filePath = path.join(uploadsPath, fileName);
-    const hash = generateHash(bytes);
+    const metaPath = path.join(uploadsPath, `${fileName}.json`);
 
-    // ── File System ──────────────────────────────────────────────────────────
     if (!fs.existsSync(filePath)) {
         fs.writeFileSync(filePath, bytes);
-    }
-
-    // ── MongoDB (optional) ───────────────────────────────────────────────────
-    if (collection) {
-        await collection.updateOne(
-            { hash },
-            {
-                $setOnInsert: {
-                    hash,
-                    file_path: filePath,
-                    width: metadata.width,
-                    height: metadata.height,
-                    filter_type: metadata.filter,
-                    extracted_at: new Date(),
-                    ...extra
-                }
-            },
-            { upsert: true }
-        );
+        
+        // Save companion metadata JSON
+        const metaDoc = {
+            hash,
+            file_name: fileName,
+            original_object: objNum,
+            width: metadata.width,
+            height: metadata.height,
+            filter_type: metadata.filter,
+            extracted_at: new Date().toISOString(),
+            ...extra
+        };
+        fs.writeFileSync(metaPath, JSON.stringify(metaDoc, null, 2));
     }
 
     return filePath;
@@ -87,13 +78,9 @@ async function persistImage(bytes, fileName, metadata, objNum, collection, extra
 /**
  * Stores an array of regular (non-background) page images.
  *
- * Each image is saved as `<sha256><ext>` in the uploads directory.
- * Logs a summary line per image.
- *
  * @param {{ bytes: Buffer, metadata: object, extension: string, objNum: number }[]} imageDataArray
- * @param {object|null} collection - MongoDB collection, or null.
  */
-async function storeImages(imageDataArray, collection) {
+function storeImages(imageDataArray) {
     if (imageDataArray.length === 0) {
         console.log('[Storage] No regular images to store.');
         return;
@@ -108,16 +95,14 @@ async function storeImages(imageDataArray, collection) {
         console.log(`Object ${data.objNum}: ${data.metadata.width}x${data.metadata.height} [${data.metadata.filter}]`);
 
         try {
-            const filePath = await persistImage(
+            const filePath = persistImage(
                 data.bytes,
+                hash,
                 fileName,
                 data.metadata,
-                data.objNum,
-                collection
+                data.objNum
             );
-
-            const storage = collection ? 'Mongo + FS' : 'FS only';
-            console.log(` -> Stored (${storage}): ${path.basename(filePath)}`);
+            console.log(` -> Stored: ${path.basename(filePath)}`);
         } catch (err) {
             console.error(` -> Error storing obj ${data.objNum}:`, err.message);
         }
@@ -125,16 +110,13 @@ async function storeImages(imageDataArray, collection) {
 }
 
 /**
- * Stores a single background image identified by the background extractor.
- *
- * The file is prefixed with "bg_" so it stands out in the uploads directory.
- * Example: uploads/bg_<sha256>.jpg
+ * Stores a single background image.
+ * The file is prefixed with "bg_".
  *
  * @param {{ bytes: Buffer, metadata: object, extension: string, objNum: number, role: string }} imageData
- * @param {object|null} collection - MongoDB collection, or null.
- * @returns {string|null} Absolute path to the stored file, or null on failure.
+ * @returns {string|null} Absolute path to the stored file.
  */
-async function storeBackgroundImage(imageData, collection) {
+function storeBackgroundImage(imageData) {
     if (!imageData) {
         console.log('[Storage] No background image to store.');
         return null;
@@ -147,17 +129,15 @@ async function storeBackgroundImage(imageData, collection) {
     const fileName = `bg_${hash}${imageData.extension}`;
 
     try {
-        const filePath = await persistImage(
+        const filePath = persistImage(
             imageData.bytes,
+            hash,
             fileName,
             imageData.metadata,
             imageData.objNum,
-            collection,
-            { role: 'background' } // extra DB field to tag the record
+            { role: 'background' }
         );
-
-        const storage = collection ? 'Mongo + FS' : 'FS only';
-        console.log(` -> Background stored (${storage}): ${path.basename(filePath)}`);
+        console.log(` -> Background stored: ${path.basename(filePath)}`);
         return filePath;
     } catch (err) {
         console.error(` -> Error storing background (obj ${imageData.objNum}):`, err.message);
