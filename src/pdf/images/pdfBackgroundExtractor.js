@@ -1,6 +1,5 @@
 const { getObject } = require('../core/pdfObjectReader');
 const { resolveDictOrRef } = require('../core/pdfDictionaryResolver');
-const { extractAllImageData } = require('./pdfImageXObjectProcessor');
 const zlib = require('zlib');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -184,7 +183,7 @@ function computeCoverage(op, pageDims) {
  * @param {string}  contentStream   - Decompressed content stream for the page.
  * @returns {number|null} Object number of the background image, or null.
  */
-function findBackgroundImageObjNum(buffer, pdfString, pageObjStr, contentStream) {
+function findBackgroundImageInfo(buffer, pdfString, pageObjStr, contentStream) {
     const pageDims = getPageDimensions(pageObjStr);
     const nameMap = buildXObjectNameMap(buffer, pdfString, pageObjStr);
 
@@ -196,7 +195,8 @@ function findBackgroundImageObjNum(buffer, pdfString, pageObjStr, contentStream)
     const paintOps = parsePaintOperations(contentStream);
     console.log(`[BgExtractor] Found ${paintOps.length} paint operation(s) in content stream.`);
 
-    let bestCandidate = null;
+    let bestCandidateObjNum = null;
+    let bestCandidateMatrix = null;
     let bestCoverage = 0;
 
     for (const op of paintOps) {
@@ -209,25 +209,27 @@ function findBackgroundImageObjNum(buffer, pdfString, pageObjStr, contentStream)
         if (coverage >= 0.8) {
             // Definitive background — stop searching.
             console.log(`[BgExtractor] Background image identified: /${op.name} (obj ${objNum})`);
-            return objNum;
+            return { objNum, matrix: op.matrix };
         }
 
         if (coverage > bestCoverage) {
             bestCoverage = coverage;
-            bestCandidate = objNum;
+            bestCandidateObjNum = objNum;
+            bestCandidateMatrix = op.matrix;
         }
     }
 
-    if (bestCandidate !== null) {
+    if (bestCandidateObjNum !== null) {
         console.log(
             `[BgExtractor] No image covers ≥80% of the page. ` +
-            `Best candidate is obj ${bestCandidate} at ${(bestCoverage * 100).toFixed(1)}% coverage.`
+            `Best candidate is obj ${bestCandidateObjNum} at ${(bestCoverage * 100).toFixed(1)}% coverage.`
         );
+        return { objNum: bestCandidateObjNum, matrix: bestCandidateMatrix };
     } else {
         console.log('[BgExtractor] No painted image XObjects matched the resource dictionary.');
     }
 
-    return bestCandidate;
+    return null;
 }
 
 /**
@@ -240,29 +242,45 @@ function findBackgroundImageObjNum(buffer, pdfString, pageObjStr, contentStream)
  * @param {string}  pdfString     - Binary string of the full PDF.
  * @param {string}  pageObjStr    - Raw string of the page PDF object.
  * @param {string}  contentStream - Decompressed content stream for the page.
- * @returns {{ bytes: Buffer, metadata: object, extension: string, objNum: number, role: string } | null}
+ * @returns {{ bytes: Buffer, metadata: object, extension: string, objNum: number, role: string, coordinates: object } | null}
  */
 function extractBackgroundImage(buffer, pdfString, pageObjStr, contentStream) {
     console.log('\n--- Background Image Extraction ---');
 
-    const objNum = findBackgroundImageObjNum(buffer, pdfString, pageObjStr, contentStream);
-    if (objNum === null) {
+    const bgInfo = findBackgroundImageInfo(buffer, pdfString, pageObjStr, contentStream);
+    if (bgInfo === null) {
         console.log('[BgExtractor] No background image found.');
         return null;
     }
 
+    const { objNum, matrix } = bgInfo;
+
+    const { extractAllImageData } = require('./pdfImageXObjectProcessor');
     const [imageData] = extractAllImageData(buffer, pdfString, [objNum]);
     if (!imageData) {
         console.warn(`[BgExtractor] Failed to extract bytes for obj ${objNum}.`);
         return null;
     }
+    
+    const format = imageData.metadata.filter === 'FlateDecode' ? 'bmp' : 'jpeg';
+
+    const appearances = [{
+        x: matrix[4],
+        y: matrix[5],
+        renderedWidth: Math.abs(matrix[0]),
+        renderedHeight: Math.abs(matrix[3])
+    }];
 
     return {
         ...imageData,
-        role: 'background'
+        role: 'background',
+        format,
+        appearances
     };
 }
 
 module.exports = {
-    extractBackgroundImage
+    extractBackgroundImage,
+    buildXObjectNameMap,
+    parsePaintOperations
 };

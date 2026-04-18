@@ -1,5 +1,6 @@
-const { getObject, resolveLength } = require('../core/pdfObjectReader');
+const { getObject, resolveLength, extractValue, decompressStream } = require('../core/pdfObjectReader');
 const { resolveDictOrRef } = require('../core/pdfDictionaryResolver');
+const { buildXObjectNameMap, parsePaintOperations } = require('./pdfBackgroundExtractor');
 const zlib = require('zlib');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -71,7 +72,7 @@ function getImageObjectNumbers(buffer, pdfString, pageObjStr) {
 /**
  * Extract raw bytes and metadata for given object numbers.
  */
-function extractAllImageData(buffer, pdfString, objectNumbers) {
+function extractAllImageData(buffer, pdfString, objectNumbers, appearancesMap = new Map()) {
     const results = [];
     for (const objNum of objectNumbers) {
         try {
@@ -99,18 +100,25 @@ function extractAllImageData(buffer, pdfString, objectNumbers) {
             const streamData = objBuffer.slice(start, start + length);
             let finalBytes = streamData;
             let extension = '.jpg';
+            let format = 'jpeg';
 
             if (metadata.filter === 'FlateDecode') {
                 finalBytes = zlib.inflateSync(streamData);
                 finalBytes = createBMP(finalBytes, metadata.width, metadata.height);
                 extension = '.bmp';
+                format = 'bmp';
             }
+
+            const appearances = appearancesMap.get(objNum) || [];
 
             results.push({
                 bytes: finalBytes,
                 metadata,
                 extension,
-                objNum
+                format,
+                objNum,
+                role: 'image',
+                appearances
             });
         } catch (err) {
             console.warn(`Failed object ${objNum}:`, err.message);
@@ -125,17 +133,53 @@ function extractAllImageData(buffer, pdfString, objectNumbers) {
 function scanForImages(buffer, pdfString) {
     const pageMatches = pdfString.matchAll(/(\d+\s+\d+\s+obj[\s\S]*?\/Type\s*\/Page[\s\S]*?endobj)/g);
     const allObjectIds = new Set();
+    const appearancesMap = new Map();
 
     console.log("--- Starting Full PDF Image Scan ---");
 
     for (const match of pageMatches) {
         const pageContent = match[0];
-        const objNumbers = getImageObjectNumbers(buffer, pdfString, pageContent);
-        objNumbers.forEach(num => allObjectIds.add(num));
+        
+        // Use the background extractor logic to map image names (e.g. /Im4 -> 4)
+        const nameMap = buildXObjectNameMap(buffer, pdfString, pageContent);
+        
+        for (const objNum of nameMap.values()) {
+            allObjectIds.add(objNum);
+            if (!appearancesMap.has(objNum)) appearancesMap.set(objNum, []);
+        }
+
+        try {
+            // Extract the decompressed stream of this specific page to find Do operations
+            let contentsRef;
+            try {
+                contentsRef = extractValue(pageContent, '/Contents');
+            } catch {
+                continue; // Page has no contents
+            }
+            
+            const contentsObjRaw = getObject(buffer, pdfString, contentsRef, true);
+            const streamLength = resolveLength(buffer, pdfString, contentsObjRaw);
+            const streamContent = decompressStream(contentsObjRaw, streamLength);
+            
+            const paintOps = parsePaintOperations(streamContent);
+            for (const op of paintOps) {
+                const objNum = nameMap.get(op.name);
+                if (objNum !== undefined) {
+                    appearancesMap.get(objNum).push({
+                        x: op.matrix[4],
+                        y: op.matrix[5],
+                        renderedWidth: Math.abs(op.matrix[0]),
+                        renderedHeight: Math.abs(op.matrix[3])
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn(`[Content Stream Parse Warning] Skipping appearances for a page: ${err.message}`);
+        }
     }
 
     console.log(`Detected ${allObjectIds.size} unique image objects across all pages.`);
-    return extractAllImageData(buffer, pdfString, Array.from(allObjectIds));
+    return extractAllImageData(buffer, pdfString, Array.from(allObjectIds), appearancesMap);
 }
 
 /**

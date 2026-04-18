@@ -100,7 +100,12 @@ function storeImages(imageDataArray) {
                 hash,
                 fileName,
                 data.metadata,
-                data.objNum
+                data.objNum,
+                {
+                    role: data.role || 'image',
+                    format: data.format,
+                    appearances: data.appearances || []
+                }
             );
             console.log(` -> Stored: ${path.basename(filePath)}`);
         } catch (err) {
@@ -135,7 +140,11 @@ function storeBackgroundImage(imageData) {
             fileName,
             imageData.metadata,
             imageData.objNum,
-            { role: 'background' }
+            { 
+                role: imageData.role || 'background',
+                format: imageData.format,
+                appearances: imageData.appearances || []
+            }
         );
         console.log(` -> Background stored: ${path.basename(filePath)}`);
         return filePath;
