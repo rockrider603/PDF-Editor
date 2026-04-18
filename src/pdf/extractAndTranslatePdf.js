@@ -1,55 +1,60 @@
-const fs = require('fs');
+const fs   = require('fs');
 const path = require('path');
 
-const { scanForImages } = require('./images/pdfImageXObjectProcessor');
-const { storeImages, storeBackgroundImage } = require('./images/pdfImageStorage');
-const { extractBackgroundImage } = require('./images/pdfBackgroundExtractor');
-const { findRootRef, extractFirstKid } = require('./core/pdfPageTreeResolver');
+const { findRootRef, extractFirstKid }        = require('./core/pdfPageTreeResolver');
 const { getObject, extractValue, resolveLength, decompressStream } = require('./core/pdfObjectReader');
-const { findFontAndCMap } = require('./text/pdfFontCMapResolver');
+const { findFontAndCMap }                      = require('./text/pdfFontCMapResolver');
 const { processContentStream, detectParasAndHeaders } = require('./text/pdfContentStreamTextProcessor');
+const { extractBackgroundImage }               = require('./images/backgroundDetector');
+const { scanPageImages }                       = require('./images/imageScanner');
+const { storePageImages, storeBackgroundImage } = require('./images/imageStorage');
 
 /**
- * Main orchestration function for PDF extraction and translation.
+ * Full PDF extraction pipeline.
  *
- * Pipeline:
- *   1. Parse PDF structure (trailer → root → pages → first page)
- *   2. Decompress and display the raw content stream
- *   3. Extract and translate text via CMap fonts
- *   4. Extract and store all XObject images
- *   5. Identify and store the background image with a "bg_" prefix
+ * Steps:
+ *   1. Resolve PDF structure (trailer → root → pages → first page)
+ *   2. Decompress the first page's content stream
+ *   3. Extract and translate text via ToUnicode CMaps
+ *   4. Classify text elements as headers or paragraphs
+ *   5. Detect and store the background image
+ *   6. Scan and store all remaining page images
+ *
+ * @param {string} filePath - Absolute or relative path to the input PDF.
  */
 async function extractAndTranslatePdf(filePath) {
     try {
         console.log(`--- Starting Analysis: ${path.basename(filePath)} ---\n`);
-        const buffer = fs.readFileSync(filePath);
+
+        const buffer    = fs.readFileSync(filePath);
         const pdfString = buffer.toString('binary');
 
-        // 1. PDF Structure Parsing
-        const rootRef = findRootRef(pdfString);
+        // ── 1. Structure ─────────────────────────────────────────────────────
+        const rootRef     = findRootRef(pdfString);
         console.log(`[1] Trailer -> Root: ${rootRef}`);
 
-        const rootObj = getObject(buffer, pdfString, rootRef);
-        const pagesRef = extractValue(rootObj, '/Pages');
+        const rootObj     = getObject(buffer, pdfString, rootRef);
+        const pagesRef    = extractValue(rootObj, '/Pages');
         console.log(`[2] Root -> Pages: ${pagesRef}`);
 
-        const pagesObj = getObject(buffer, pdfString, pagesRef);
+        const pagesObj    = getObject(buffer, pdfString, pagesRef);
         const firstPageRef = extractFirstKid(pagesObj, pagesRef);
         console.log(`[3] Pages -> First Page: ${firstPageRef}`);
 
-        const pageObj = getObject(buffer, pdfString, firstPageRef);
+        const pageObj     = getObject(buffer, pdfString, firstPageRef);
         const contentsRef = extractValue(pageObj, '/Contents');
         console.log(`[4] Page -> Contents: ${contentsRef}`);
 
-        const contentsObjRaw = getObject(buffer, pdfString, contentsRef, true);
-        const streamLength = resolveLength(buffer, pdfString, contentsObjRaw);
+        const contentsBuffer = getObject(buffer, pdfString, contentsRef, true);
+        const streamLength   = resolveLength(buffer, pdfString, contentsBuffer);
         console.log(`[5] Content Stream Length: ${streamLength} bytes`);
 
-        // 2. Text Extraction
-        const decompressed = decompressStream(contentsObjRaw, streamLength);
+        // ── 2. Content Stream ─────────────────────────────────────────────────
+        const contentStream = decompressStream(contentsBuffer, streamLength);
         console.log('\n--- RAW CONTENT STREAM ---');
-        console.log(decompressed);
+        console.log(contentStream);
 
+        // ── 3. Text Extraction ────────────────────────────────────────────────
         const fonts = findFontAndCMap(buffer, pdfString, pageObj);
         console.log('\n--- FONTS & CMAPS ---');
         for (const [name, font] of Object.entries(fonts)) {
@@ -58,35 +63,29 @@ async function extractAndTranslatePdf(filePath) {
         }
 
         console.log('\n--- TRANSLATED TEXT ---');
-        const textElements = processContentStream(decompressed, fonts);
+        const textElements = processContentStream(contentStream, fonts);
         textElements.forEach(el => console.log(el.text));
 
         console.log('\n--- FINAL PDF CONTENT ---');
-        const finalText = textElements.map(el => el.text).join('\n');
-        console.log(finalText || '[No translatable text found]');
+        console.log(textElements.map(el => el.text).join('\n') || '[No translatable text found]');
 
+        // ── 4. Classification ─────────────────────────────────────────────────
         detectParasAndHeaders(textElements);
 
-        // 3. Background Image Extraction (first page only)
-        // We pass `pageObj` and the decompressed content stream so the extractor
-        // can cross-reference painted XObjects with page dimensions without
-        // re-reading from disk.
-        const bgImage = extractBackgroundImage(buffer, pdfString, pageObj, decompressed);
+        // ── 5. Background Image ───────────────────────────────────────────────
+        const bgImage = extractBackgroundImage(buffer, pdfString, pageObj, contentStream);
         storeBackgroundImage(bgImage);
 
-        // 4. Image Extraction and Storage
-        // Scan for all other images, filtering out the background if found
-        let imagesData = scanForImages(buffer, pdfString);
+        // ── 6. Page Images ────────────────────────────────────────────────────
+        let pageImages = scanPageImages(buffer, pdfString);
         if (bgImage) {
-            imagesData = imagesData.filter(img => img.objNum !== bgImage.objNum);
+            pageImages = pageImages.filter(img => img.objNum !== bgImage.objNum);
         }
-        storeImages(imagesData);
+        storePageImages(pageImages);
 
     } catch (err) {
         console.error(`\n[!] ERROR: ${err.message}`);
     }
 }
 
-module.exports = {
-    extractAndTranslatePdf
-};
+module.exports = { extractAndTranslatePdf };
