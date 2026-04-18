@@ -1,112 +1,249 @@
 const { getObject } = require('../core/pdfObjectReader');
 const { resolveDictOrRef } = require('../core/pdfDictionaryResolver');
+const zlib = require('zlib');
+const fs = require('fs');
+const crypto = require('crypto');
+const path = require('path');
 
-function extractImageMetadata(imageObjStr) {
-    try {
-        const metadata = {};
-
-        const widthMatch = imageObjStr.match(/\/Width\s+(\d+)/);
-        if (widthMatch) metadata.width = parseInt(widthMatch[1]);
-
-        const heightMatch = imageObjStr.match(/\/Height\s+(\d+)/);
-        if (heightMatch) metadata.height = parseInt(heightMatch[1]);
-
-        const colorSpaceMatch = imageObjStr.match(/\/ColorSpace\s+\/(\w+)/);
-        if (colorSpaceMatch) metadata.colorSpace = colorSpaceMatch[1];
-
-        const bitsPerComponentMatch = imageObjStr.match(/\/BitsPerComponent\s+(\d+)/);
-        if (bitsPerComponentMatch) metadata.bitsPerComponent = parseInt(bitsPerComponentMatch[1]);
-
-        const filterMatch = imageObjStr.match(/\/Filter\s+\/(\w+)/);
-        if (filterMatch) metadata.filter = filterMatch[1];
-
-        return metadata;
-    } catch (err) {
-        console.warn(`  [!] Warning: Failed to extract image metadata: ${err.message}`);
-        return {};
-    }
+/**
+ * STEP 5: Content Hashing
+ * Ensures we don't store the same image twice.
+ */
+function generateHash(buffer) {
+    return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
-function findXObjects(buffer, pdfString, pageObjStr) {
-    try {
-        const resEntry = resolveDictOrRef(pageObjStr, '/Resources');
-        if (!resEntry) {
-            return {};
+/**
+ * Logic to find Resources, checking Parent if not found on the Page.
+ */
+function getPageResources(buffer, pdfString, pageObjStr) {
+    let resEntry = resolveDictOrRef(pageObjStr, '/Resources');
+
+    // If not found, check the Parent (Inheritance)
+    if (!resEntry) {
+        const parentMatch = pageObjStr.match(/\/Parent\s+(\d+\s+\d+\s+R)/);
+        if (parentMatch) {
+            const parentObj = getObject(buffer, pdfString, parentMatch[1]);
+            resEntry = resolveDictOrRef(parentObj, '/Resources');
         }
+    }
+    return resEntry;
+}
+
+/**
+ * FUNCTION 1: Find XObject references
+ */
+function getImageObjectNumbers(buffer, pdfString, pageObjStr) {
+    try {
+        const resEntry = getPageResources(buffer, pdfString, pageObjStr);
+        if (!resEntry) return [];
 
         const resObj = resEntry.type === 'ref'
             ? getObject(buffer, pdfString, resEntry.value)
             : resEntry.value;
 
         const xobjectEntry = resolveDictOrRef(resObj, '/XObject');
-        if (!xobjectEntry) {
-            return {};
-        }
+        if (!xobjectEntry) return [];
 
         const xobjectDict = xobjectEntry.type === 'ref'
             ? getObject(buffer, pdfString, xobjectEntry.value)
             : xobjectEntry.value;
 
-        const images = {};
-        const xobjectMatches = xobjectDict.match(/\/(\w+)\s+(\d+\s+\d+\s+R)/g) || [];
+        const objectNumbers = [];
+        // Improved Regex to handle various spacings
+        const xobjectMatches = xobjectDict.match(/\/([^\s/<>]+)\s*(\d+\s+\d+\s+R)/g) || [];
 
         for (const match of xobjectMatches) {
-            try {
-                const parts = match.split(/\s+/);
-                const objName = parts[0].replace('/', '');
-                const objRef = parts.slice(1).join(' ');
+            const refMatch = match.match(/(\d+)\s+\d+\s+R/);
+            if (refMatch) {
+                const objNum = parseInt(refMatch[1]);
+                const xobjectContent = getObject(buffer, pdfString, `${objNum} 0 R`);
 
-                const xobjectObj = getObject(buffer, pdfString, objRef);
-
-                if (xobjectObj.includes('/Subtype/Image') || xobjectObj.includes('/Subtype /Image')) {
-                    const metadata = extractImageMetadata(xobjectObj);
-                    images[objName] = {
-                        ref: objRef,
-                        type: 'Image',
-                        metadata
-                    };
+                // Only add if it's actually an Image subtype
+                if (xobjectContent.includes('/Image')) {
+                    objectNumbers.push(objNum);
                 }
-            } catch (err) {
-                console.warn(`  [!] Warning: Failed to process XObject ${match}: ${err.message}`);
-                continue;
             }
         }
-
-        return images;
+        return [...new Set(objectNumbers)]; // Unique numbers only
     } catch (err) {
-        console.warn(`[!] Warning: Failed to find XObjects in page resources: ${err.message}`);
-        return {};
+        console.error("Error finding image numbers:", err);
+        return [];
     }
 }
 
-function processImages(images) {
-    try {
-        if (Object.keys(images).length === 0) {
-            return;
-        }
+/**
+ * FUNCTION 2: Extract bytes and Metadata
+ */
+function extractAllImageData(buffer, pdfString, objectNumbers) {
+    const results = [];
+    for (const objNum of objectNumbers) {
+        try {
+            const ref = `${objNum} 0 R`;
+            const objBuffer = getObject(buffer, pdfString, ref, true);
+            const objStr = objBuffer.toString('binary');
 
-        console.log('\n--- IMAGES FOUND ---');
-        for (const [name, imgData] of Object.entries(images)) {
-            console.log(`\nImage ${name}:`);
-            console.log(`  Type: ${imgData.type}`);
-            console.log(`  Reference: ${imgData.ref}`);
+            const metadata = extractImageMetadata(objStr);
 
-            if (Object.keys(imgData.metadata).length > 0) {
-                console.log('  Metadata:');
-                for (const [key, value] of Object.entries(imgData.metadata)) {
-                    console.log(`    ${key}: ${value}`);
-                }
-            } else {
-                console.log('  Metadata: [Not extracted]');
+            // Find Stream
+            const streamIdx = objBuffer.indexOf('stream');
+            if (streamIdx === -1) continue;
+
+            let start = streamIdx + 6;
+            if (objBuffer[start] === 0x0d) start += 2; // \r\n
+            else if (objBuffer[start] === 0x0a) start += 1; // \n
+
+            // Handle Length (Indirect or Direct)
+            let length = metadata.length || 0;
+            if (objStr.includes('/Length')) {
+                const lenMatch = objStr.match(/\/Length\s+(\d+)/);
+                if (lenMatch) length = parseInt(lenMatch[1]);
             }
+
+            const streamData = objBuffer.slice(start, start + length);
+            let finalBytes = streamData;
+            let extension = '.jpg';
+
+            // Decode Filter
+            if (metadata.filter === 'FlateDecode') {
+                finalBytes = zlib.inflateSync(streamData);
+                // Convert to BMP because raw Flate is just pixels, not a file
+                finalBytes = createBMP(finalBytes, metadata.width, metadata.height);
+                extension = '.bmp';
+            }
+
+            results.push({
+                bytes: finalBytes,
+                metadata,
+                extension,
+                objNum
+            });
+        } catch (err) {
+            console.warn(`Failed object ${objNum}:`, err.message);
         }
-    } catch (err) {
-        console.warn(`[!] Warning: Failed to process images: ${err.message}`);
     }
+    return results;
+}
+
+
+// --- [NEW FUNCTION: MASTER PDF SCANNER] ---
+/**
+ * ADDITION: This scans the entire PDF string for ALL Page objects
+ * and runs the extraction logic on every single one.
+ */
+async function processEntirePdf(buffer, pdfString, collection) {
+    // 1. Find all Page objects in the PDF using Regex
+    // Page objects typically contain /Type /Page
+    const pageMatches = pdfString.matchAll(/(\d+\s+\d+\s+obj[\s\S]*?\/Type\s*\/Page[\s\S]*?endobj)/g);
+
+    let totalImages = 0;
+    const allObjectIds = new Set();
+
+    console.log("--- Starting Full PDF Image Scan ---");
+
+    for (const match of pageMatches) {
+        const pageContent = match[0];
+
+        // 2. Find image IDs for THIS specific page
+        const objNumbers = getImageObjectNumbers(buffer, pdfString, pageContent);
+
+        // Add to our master set to avoid re-processing same images used on multiple pages
+        objNumbers.forEach(num => allObjectIds.add(num));
+    }
+
+    console.log(`Detected ${allObjectIds.size} unique image objects across all pages.`);
+
+    // 3. Extract and Store everything found
+    const finalDataArray = extractAllImageData(buffer, pdfString, Array.from(allObjectIds));
+    await storeAndDisplayImages(finalDataArray, collection);
+}
+
+
+
+/**
+ * FUNCTION 3: Neat Display and DB Storage
+ */
+async function storeAndDisplayImages(imageDataArray, collection) {
+    if (imageDataArray.length === 0) {
+        console.log("No images detected in this page.");
+        return;
+    }
+
+    console.log('\n--- MONGODB EXTRACTION REPORT ---');
+
+    for (const data of imageDataArray) {
+        const hash = generateHash(data.bytes);
+        const fileName = `${hash}${data.extension}`;
+        const uploadPath = path.join(__dirname, 'uploads', fileName);
+
+        console.log(`Object ${data.objNum}: ${data.metadata.width}x${data.metadata.height} [${data.metadata.filter}]`);
+
+        try {
+            // 1. Save to File System
+            if (!fs.existsSync(uploadPath)) {
+                fs.writeFileSync(uploadPath, data.bytes);
+            }
+
+            // 2. Save to MongoDB
+            if (collection) {
+                await collection.updateOne(
+                    { hash: hash }, // Filter: Look for this hash
+                    {
+                        $setOnInsert: {
+                            hash: hash,
+                            file_path: uploadPath,
+                            width: data.metadata.width,
+                            height: data.metadata.height,
+                            filter_type: data.metadata.filter,
+                            extracted_at: new Date()
+                        }
+                    },
+                    { upsert: true } // Create if it doesn't exist
+                );
+            }
+            console.log(` -> Stored in Mongo: ${fileName}`);
+        } catch (err) {
+            console.error(` -> Error storing ${data.objNum}:`, err.message);
+        }
+    }
+}
+
+/**
+ * Helper: Metadata Parser
+ */
+function extractImageMetadata(str) {
+    return {
+        width: parseInt(str.match(/\/Width\s+(\d+)/)?.[1] || 0),
+        height: parseInt(str.match(/\/Height\s+(\d+)/)?.[1] || 0),
+        filter: str.match(/\/Filter\s*\/(\w+)/)?.[1] || 'None',
+        length: parseInt(str.match(/\/Length\s+(\d+)/)?.[1] || 0)
+    };
+}
+
+/**
+ * Helper: BMP wrapper for raw pixels
+ */
+function createBMP(pixelData, width, height) {
+    const rowSize = Math.floor((width * 3 + 3) / 4) * 4;
+    const fileSize = 54 + (rowSize * height);
+    const buf = Buffer.alloc(fileSize);
+    buf.write('BM', 0);
+    buf.writeUInt32LE(fileSize, 2);
+    buf.writeUInt32LE(54, 10);
+    buf.writeUInt32LE(40, 14);
+    buf.writeInt32LE(width, 18);
+    buf.writeInt32LE(-height, 22);
+    buf.writeUInt16LE(1, 26);
+    buf.writeUInt16LE(24, 28);
+    // Note: This assumes standard RGB. Real PDF parsing requires 
+    // checking ColorSpace for BGR/RGB swapping.
+    pixelData.copy(buf, 54);
+    return buf;
 }
 
 module.exports = {
-    extractImageMetadata,
-    findXObjects,
-    processImages
+    getImageObjectNumbers,
+    extractAllImageData,
+    storeAndDisplayImages,
+    processEntirePdf
 };
