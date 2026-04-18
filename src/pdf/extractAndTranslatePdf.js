@@ -67,16 +67,20 @@ async function extractAndTranslatePdf(filePath) {
 
         detectParasAndHeaders(textElements);
 
-        // 3. Image Extraction and Storage
-        const imagesData = scanForImages(buffer, pdfString);
-        storeImages(imagesData);
-
-        // 4. Background Image Extraction (first page only)
+        // 3. Background Image Extraction (first page only)
         // We pass `pageObj` and the decompressed content stream so the extractor
         // can cross-reference painted XObjects with page dimensions without
         // re-reading from disk.
         const bgImage = extractBackgroundImage(buffer, pdfString, pageObj, decompressed);
         storeBackgroundImage(bgImage);
+
+        // 4. Image Extraction and Storage
+        // Scan for all other images, filtering out the background if found
+        let imagesData = scanForImages(buffer, pdfString);
+        if (bgImage) {
+            imagesData = imagesData.filter(img => img.objNum !== bgImage.objNum);
+        }
+        storeImages(imagesData);
 
     } catch (err) {
         console.error(`\n[!] ERROR: ${err.message}`);
