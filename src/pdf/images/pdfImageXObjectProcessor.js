@@ -6,7 +6,6 @@ const crypto = require('crypto');
 const path = require('path');
 
 /**
- * STEP 5: Content Hashing
  * Ensures we don't store the same image twice.
  */
 function generateHash(buffer) {
@@ -19,7 +18,6 @@ function generateHash(buffer) {
 function getPageResources(buffer, pdfString, pageObjStr) {
     let resEntry = resolveDictOrRef(pageObjStr, '/Resources');
 
-    // If not found, check the Parent (Inheritance)
     if (!resEntry) {
         const parentMatch = pageObjStr.match(/\/Parent\s+(\d+\s+\d+\s+R)/);
         if (parentMatch) {
@@ -31,7 +29,7 @@ function getPageResources(buffer, pdfString, pageObjStr) {
 }
 
 /**
- * FUNCTION 1: Find XObject references
+ * Find XObject image references on a single page.
  */
 function getImageObjectNumbers(buffer, pdfString, pageObjStr) {
     try {
@@ -50,7 +48,6 @@ function getImageObjectNumbers(buffer, pdfString, pageObjStr) {
             : xobjectEntry.value;
 
         const objectNumbers = [];
-        // Improved Regex to handle various spacings
         const xobjectMatches = xobjectDict.match(/\/([^\s/<>]+)\s*(\d+\s+\d+\s+R)/g) || [];
 
         for (const match of xobjectMatches) {
@@ -59,13 +56,12 @@ function getImageObjectNumbers(buffer, pdfString, pageObjStr) {
                 const objNum = parseInt(refMatch[1]);
                 const xobjectContent = getObject(buffer, pdfString, `${objNum} 0 R`);
 
-                // Only add if it's actually an Image subtype
                 if (xobjectContent.includes('/Image')) {
                     objectNumbers.push(objNum);
                 }
             }
         }
-        return [...new Set(objectNumbers)]; // Unique numbers only
+        return [...new Set(objectNumbers)];
     } catch (err) {
         console.error("Error finding image numbers:", err);
         return [];
@@ -73,7 +69,7 @@ function getImageObjectNumbers(buffer, pdfString, pageObjStr) {
 }
 
 /**
- * FUNCTION 2: Extract bytes and Metadata
+ * Extract raw bytes and metadata for given object numbers.
  */
 function extractAllImageData(buffer, pdfString, objectNumbers) {
     const results = [];
@@ -85,7 +81,6 @@ function extractAllImageData(buffer, pdfString, objectNumbers) {
 
             const metadata = extractImageMetadata(objStr);
 
-            // Find Stream
             const streamIdx = objBuffer.indexOf('stream');
             if (streamIdx === -1) continue;
 
@@ -93,7 +88,6 @@ function extractAllImageData(buffer, pdfString, objectNumbers) {
             if (objBuffer[start] === 0x0d) start += 2; // \r\n
             else if (objBuffer[start] === 0x0a) start += 1; // \n
 
-            // Handle Length (Indirect or Direct)
             let length = metadata.length || 0;
             if (objStr.includes('/Length')) {
                 const lenMatch = objStr.match(/\/Length\s+(\d+)/);
@@ -104,10 +98,8 @@ function extractAllImageData(buffer, pdfString, objectNumbers) {
             let finalBytes = streamData;
             let extension = '.jpg';
 
-            // Decode Filter
             if (metadata.filter === 'FlateDecode') {
                 finalBytes = zlib.inflateSync(streamData);
-                // Convert to BMP because raw Flate is just pixels, not a file
                 finalBytes = createBMP(finalBytes, metadata.width, metadata.height);
                 extension = '.bmp';
             }
@@ -125,87 +117,23 @@ function extractAllImageData(buffer, pdfString, objectNumbers) {
     return results;
 }
 
-
-// --- [NEW FUNCTION: MASTER PDF SCANNER] ---
 /**
- * ADDITION: This scans the entire PDF string for ALL Page objects
- * and runs the extraction logic on every single one.
+ * Scans the entire PDF for all page objects and finds all unique image references.
  */
-async function processEntirePdf(buffer, pdfString, collection) {
-    // 1. Find all Page objects in the PDF using Regex
-    // Page objects typically contain /Type /Page
+function scanForImages(buffer, pdfString) {
     const pageMatches = pdfString.matchAll(/(\d+\s+\d+\s+obj[\s\S]*?\/Type\s*\/Page[\s\S]*?endobj)/g);
-
-    let totalImages = 0;
     const allObjectIds = new Set();
 
     console.log("--- Starting Full PDF Image Scan ---");
 
     for (const match of pageMatches) {
         const pageContent = match[0];
-
-        // 2. Find image IDs for THIS specific page
         const objNumbers = getImageObjectNumbers(buffer, pdfString, pageContent);
-
-        // Add to our master set to avoid re-processing same images used on multiple pages
         objNumbers.forEach(num => allObjectIds.add(num));
     }
 
     console.log(`Detected ${allObjectIds.size} unique image objects across all pages.`);
-
-    // 3. Extract and Store everything found
-    const finalDataArray = extractAllImageData(buffer, pdfString, Array.from(allObjectIds));
-    await storeAndDisplayImages(finalDataArray, collection);
-}
-
-
-
-/**
- * FUNCTION 3: Neat Display and DB Storage
- */
-async function storeAndDisplayImages(imageDataArray, collection) {
-    if (imageDataArray.length === 0) {
-        console.log("No images detected in this page.");
-        return;
-    }
-
-    console.log('\n--- MONGODB EXTRACTION REPORT ---');
-
-    for (const data of imageDataArray) {
-        const hash = generateHash(data.bytes);
-        const fileName = `${hash}${data.extension}`;
-        const uploadPath = path.join(__dirname, 'uploads', fileName);
-
-        console.log(`Object ${data.objNum}: ${data.metadata.width}x${data.metadata.height} [${data.metadata.filter}]`);
-
-        try {
-            // 1. Save to File System
-            if (!fs.existsSync(uploadPath)) {
-                fs.writeFileSync(uploadPath, data.bytes);
-            }
-
-            // 2. Save to MongoDB
-            if (collection) {
-                await collection.updateOne(
-                    { hash: hash }, // Filter: Look for this hash
-                    {
-                        $setOnInsert: {
-                            hash: hash,
-                            file_path: uploadPath,
-                            width: data.metadata.width,
-                            height: data.metadata.height,
-                            filter_type: data.metadata.filter,
-                            extracted_at: new Date()
-                        }
-                    },
-                    { upsert: true } // Create if it doesn't exist
-                );
-            }
-            console.log(` -> Stored in Mongo: ${fileName}`);
-        } catch (err) {
-            console.error(` -> Error storing ${data.objNum}:`, err.message);
-        }
-    }
+    return extractAllImageData(buffer, pdfString, Array.from(allObjectIds));
 }
 
 /**
@@ -244,6 +172,5 @@ function createBMP(pixelData, width, height) {
 module.exports = {
     getImageObjectNumbers,
     extractAllImageData,
-    storeAndDisplayImages,
-    processEntirePdf
+    scanForImages
 };

@@ -13,8 +13,10 @@ Maintain a modular PDF analysis tool that:
 
 The project is organized by responsibility:
 - `core`: low-level PDF object/page/dictionary handling
+- `core/db.js`: MongoDB connection management
 - `text`: CMap parsing and content stream text reconstruction
 - `images`: image XObject discovery and metadata extraction
+- `images/pdfImageStorage.js`: image persistence to file system and MongoDB
 - `extractAndTranslatePdf.js`: orchestration layer
 - `index.js`: CLI entrypoint
 
@@ -48,7 +50,10 @@ When adding features:
   - `src/pdf/text/pdfCMapParser.js`
   - `src/pdf/text/pdfContentStreamTextProcessor.js`
 - Image extraction path:
-  - `src/pdf/images/pdfImageXObjectProcessor.js`
+  - `src/pdf/images/pdfImageXObjectProcessor.js` (Discovery)
+  - `src/pdf/images/pdfImageStorage.js` (Persistence)
+- Database:
+  - `src/pdf/core/db.js`
 
 ## Quick Run
 

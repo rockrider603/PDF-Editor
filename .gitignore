@@ -3,3 +3,4 @@ test-pdfs
 *.pdf
 node_modules/
 .env
+uploads/
