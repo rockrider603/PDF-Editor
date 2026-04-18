@@ -4,67 +4,87 @@ Project context and maintenance guide for this workspace.
 
 ## Current Goal
 
-Maintain a modular PDF analysis tool that:
-- extracts text via ToUnicode CMaps,
-- detects embedded image XObjects,
-- and keeps detailed debug logs during parsing.
+A modular PDF analysis tool that:
+- Extracts text via ToUnicode CMap fonts
+- Detects and extracts embedded image XObjects with full positional metadata
+- Identifies the background image using content stream paint operation analysis
+- Stores all assets locally in `uploads/` with companion `.json` metadata
 
-## Architecture Context
+## Architecture
 
-The project is organized by responsibility:
-- `core`: low-level PDF object/page/dictionary handling
-- `text`: CMap parsing and content stream text reconstruction
-- `images`: image XObject discovery, background detection, and metadata extraction
-- `images/pdfImageStorage.js`: image persistence to file system and JSON metadata
-- `images/pdfBackgroundExtractor.js`: identifies the background image by analysing content-stream paint operations vs. page dimensions
-- `extractAndTranslatePdf.js`: orchestration layer
-- `index.js`: CLI entrypoint
+```
+src/pdf/
+├── extractAndTranslatePdf.js   # Orchestrator — coordinates all pipeline steps
+├── core/
+│   ├── pdfObjectReader.js      # getObject, resolveLength, decompressStream, extractValue
+│   ├── pdfDictionaryResolver.js# resolveDictOrRef, extractInlineDictionary
+│   └── pdfPageTreeResolver.js  # findRootRef, extractFirstKid
+├── text/
+│   ├── pdfFontCMapResolver.js  # Resolves /Font and /ToUnicode CMap streams
+│   ├── pdfCMapParser.js        # parseCMap, translateText, buildCharMap
+│   └── pdfContentStreamTextProcessor.js  # processContentStream, detectParasAndHeaders
+├── images/
+│   ├── pageContentParser.js    # buildXObjectNameMap, parsePaintOperations (shared, no I/O)
+│   ├── imageDecoder.js         # decodeImageObject, parseImageMetadata, encodeBmp
+│   ├── imageScanner.js         # scanPageImages — full-PDF image discovery and decoding
+│   ├── backgroundDetector.js   # extractBackgroundImage — CTM-based page coverage scoring
+│   └── imageStorage.js         # storePageImages, storeBackgroundImage
+└── storage/
+    └── fileStore.js            # hashBytes, writeImageToDisk — all filesystem I/O
+```
 
-## Behavioral Expectations
+## Module Responsibilities
 
-1. Keep existing debug sections and log order stable.
-2. Preserve support for both PDF styles:
-   - LibreOffice-generated PDFs
-   - Word-generated PDFs
-3. Continue handling:
-   - inline dictionaries and indirect references
-   - variable-width glyph codes in CMaps
-   - multi-code-unit Unicode mappings
-4. Keep first-page extraction behavior unless explicitly expanded.
+| Module | Responsibility |
+|---|---|
+| `pageContentParser.js` | Parse CTM (`cm`) and paint (`Do`) operators from a content stream. Shared by both the scanner and detector. No I/O. |
+| `imageDecoder.js` | Decode a single PDF image object. Handles FlateDecode → BMP and DCTDecode → JPEG. No I/O. |
+| `imageScanner.js` | Walk every `/Page` in the XRef table, collect XObject references, build the `appearances` map, and decode all images. |
+| `backgroundDetector.js` | Score each painted image by page coverage ratio. Returns the best background candidate (≥80% threshold, or largest fallback). |
+| `imageStorage.js` | Build the metadata document and delegate writes to `fileStore.js`. No hash or fs logic inline. |
+| `fileStore.js` | Only module that touches `fs`. Handles directory creation, file writes, and JSON companion files. |
+
+## Key Data Shapes
+
+Each stored image entry carries:
+```json
+{
+  "hash": "<sha256>",
+  "file_name": "<sha256>.jpg",
+  "original_object": 9,
+  "width": 1000,
+  "height": 1000,
+  "filter_type": "DCTDecode",
+  "extracted_at": "...",
+  "role": "image",
+  "format": "jpeg",
+  "appearances": [
+    { "x": 120.8, "y": 350.0, "renderedWidth": 367.8, "renderedHeight": 367.8 }
+  ]
+}
+```
+
+Background images use `"role": "background"` and are prefixed with `bg_`.
 
 ## Extension Guidelines
 
-When adding features:
-1. Add logic in the correct domain module (`core`, `text`, `images`).
-2. Keep `extractAndTranslatePdf.js` as coordinator only.
-3. Keep `index.js` minimal (argument parsing and dispatch).
-4. Use `try/catch` around recoverable parse logic and emit warnings instead of hard-failing when possible.
-5. Avoid changing existing output labels unless required.
-
-## Known Data Paths
-
-- Entry: `index.js`
-- Main orchestration: `src/pdf/extractAndTranslatePdf.js`
-- Text extraction path:
-  - `src/pdf/text/pdfFontCMapResolver.js`
-  - `src/pdf/text/pdfCMapParser.js`
-  - `src/pdf/text/pdfContentStreamTextProcessor.js`
-- Image extraction path:
-  - `src/pdf/images/pdfImageXObjectProcessor.js` (XObject discovery & byte extraction)
-  - `src/pdf/images/pdfBackgroundExtractor.js` (background detection via CTM analysis)
-  - `src/pdf/images/pdfImageStorage.js` (FS + JSON metadata persistence)
+1. Add new logic in its domain module, not in the orchestrator.
+2. Keep `extractAndTranslatePdf.js` as a coordinator only — no parsing logic.
+3. Keep `index.js` minimal: argument parsing and invocation only.
+4. All filesystem writes go through `fileStore.js`.
+5. Use `try/catch` around recoverable parse operations; emit warnings rather than crashing.
 
 ## Quick Run
 
 ```bash
-node index.js test.pdf
-node index.js "Hello World.pdf"
+node index.js TEST.pdf
+node index.js "path/to/file.pdf"
 ```
 
 ## Maintenance Checklist
 
 Before committing parser changes:
-1. Run with at least one LibreOffice PDF and one Word PDF.
-2. Confirm `--- FINAL PDF CONTENT ---` remains readable and accurate.
-3. Confirm image logs appear when `/Subtype/Image` exists.
-4. Confirm no regressions in CMap decoding output.
+1. Run with `TEST.pdf` and confirm `--- FINAL PDF CONTENT ---` is readable and correct.
+2. Confirm image logs appear when `/Subtype/Image` objects are present.
+3. Confirm `uploads/` contains the expected `.bmp`/`.jpg` files and their `.json` companions.
+4. Confirm `bg_` prefix appears on one file only, and that the same object does not appear twice.
