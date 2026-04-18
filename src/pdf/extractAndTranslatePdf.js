@@ -3,7 +3,8 @@ const path = require('path');
 
 const { connectDB, client } = require('./core/db');
 const { scanForImages } = require('./images/pdfImageXObjectProcessor');
-const { storeImages } = require('./images/pdfImageStorage');
+const { storeImages, storeBackgroundImage } = require('./images/pdfImageStorage');
+const { extractBackgroundImage } = require('./images/pdfBackgroundExtractor');
 const { findRootRef, extractFirstKid } = require('./core/pdfPageTreeResolver');
 const { getObject, extractValue, resolveLength, decompressStream } = require('./core/pdfObjectReader');
 const { findFontAndCMap } = require('./text/pdfFontCMapResolver');
@@ -11,6 +12,13 @@ const { processContentStream, detectParasAndHeaders } = require('./text/pdfConte
 
 /**
  * Main orchestration function for PDF extraction and translation.
+ *
+ * Pipeline:
+ *   1. Parse PDF structure (trailer → root → pages → first page)
+ *   2. Decompress and display the raw content stream
+ *   3. Extract and translate text via CMap fonts
+ *   4. Extract and store all XObject images
+ *   5. Identify and store the background image with a "bg_" prefix
  */
 async function extractAndTranslatePdf(filePath) {
     try {
@@ -66,12 +74,19 @@ async function extractAndTranslatePdf(filePath) {
         const imagesData = scanForImages(buffer, pdfString);
         await storeImages(imagesData, collection);
 
+        // 4. Background Image Extraction (first page only)
+        // We pass `pageObj` and the decompressed content stream so the extractor
+        // can cross-reference painted XObjects with page dimensions without
+        // re-reading from disk.
+        const bgImage = extractBackgroundImage(buffer, pdfString, pageObj, decompressed);
+        await storeBackgroundImage(bgImage, collection);
+
     } catch (err) {
         console.error(`\n[!] ERROR: ${err.message}`);
     } finally {
         if (client) {
             await client.close();
-            console.log("\n[Note] MongoDB connection closed.");
+            console.log('\n[Note] MongoDB connection closed.');
         }
     }
 }

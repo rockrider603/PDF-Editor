@@ -15,8 +15,9 @@ The project is organized by responsibility:
 - `core`: low-level PDF object/page/dictionary handling
 - `core/db.js`: MongoDB connection management
 - `text`: CMap parsing and content stream text reconstruction
-- `images`: image XObject discovery and metadata extraction
+- `images`: image XObject discovery, background detection, and metadata extraction
 - `images/pdfImageStorage.js`: image persistence to file system and MongoDB
+- `images/pdfBackgroundExtractor.js`: identifies the background image by analysing content-stream paint operations vs. page dimensions
 - `extractAndTranslatePdf.js`: orchestration layer
 - `index.js`: CLI entrypoint
 
@@ -50,8 +51,9 @@ When adding features:
   - `src/pdf/text/pdfCMapParser.js`
   - `src/pdf/text/pdfContentStreamTextProcessor.js`
 - Image extraction path:
-  - `src/pdf/images/pdfImageXObjectProcessor.js` (Discovery)
-  - `src/pdf/images/pdfImageStorage.js` (Persistence)
+  - `src/pdf/images/pdfImageXObjectProcessor.js` (XObject discovery & byte extraction)
+  - `src/pdf/images/pdfBackgroundExtractor.js` (background detection via CTM analysis)
+  - `src/pdf/images/pdfImageStorage.js` (FS + MongoDB persistence)
 - Database:
   - `src/pdf/core/db.js`
 

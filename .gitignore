@@ -4,3 +4,6 @@ test-pdfs
 node_modules/
 .env
 uploads/
+*.odt
+*.docx
+*.~lock.*
