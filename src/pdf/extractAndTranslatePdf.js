@@ -1,14 +1,24 @@
 const fs = require('fs');
 const path = require('path');
 
+// New additions for MongoDB connection
+const { connectDB, client } = require('../../db'); // [NEW] Import the MongoDB connection helper
+
+// New additions
+const { getImageObjectNumbers, extractAllImageData,processEntirePdf, displayImageData, findXObjects, processImages, storeAndDisplayImages } = require('./images/pdfImageXObjectProcessor');
+
 const { findRootRef, extractFirstKid } = require('./core/pdfPageTreeResolver');
 const { getObject, extractValue, resolveLength, decompressStream } = require('./core/pdfObjectReader');
 const { findFontAndCMap } = require('./text/pdfFontCMapResolver');
 const { processContentStream, detectParasAndHeaders } = require('./text/pdfContentStreamTextProcessor');
-const { findXObjects, processImages } = require('./images/pdfImageXObjectProcessor');
+const { extractAndLogImageData } = require('./images/pdfImageXObjectProcessor');
 
-function extractAndTranslatePdf(filePath) {
+// [CHANGED] Added 'async' keyword to handle MongoDB database operations
+async function extractAndTranslatePdf(filePath) {
     try {
+        // [NEW] Initialize MongoDB connection and get the 'pdf_images' collection
+        const collection = await connectDB(); 
+
         console.log(`--- Starting Analysis: ${path.basename(filePath)} ---\n`);
         const buffer = fs.readFileSync(filePath);
         const pdfString = buffer.toString('binary');
@@ -42,26 +52,40 @@ function extractAndTranslatePdf(filePath) {
         console.log('\n--- FONTS & CMAPS ---');
         for (const [name, font] of Object.entries(fonts)) {
             console.log(`\nFont ${name}:`);
-            console.log('  CMap entries:', font.cmapMap);
+            console.log('  CMap entries:', font.cmapMap);
         }
 
-        const images = findXObjects(buffer, pdfString, pageObj);
-        processImages(images);
+        // const images = findXObjects(buffer, pdfString, pageObj);
+        // processImages(images);
+
+        // const objectNumbers = getImageObjectNumbers(buffer, pdfString, pageObj);
+        // const imageDataArray = extractAllImageData(buffer, pdfString, objectNumbers);
+        
+        // // [CHANGED] Swapped displayImageData for storeAndDisplayImages to support MongoDB persistence
+        // // [NEW] Added 'await' and passed the 'collection' variable to the processor
+        // await storeAndDisplayImages(imageDataArray, collection);
+
+        await processEntirePdf(buffer, pdfString, collection);
 
         console.log('\n--- TRANSLATED TEXT ---');
-        const textElements = processContentStream(decompressed, fonts);  // Now returns array of objects
+        const textElements = processContentStream(decompressed, fonts);
 
-        // Display the text
         textElements.forEach(el => console.log(el.text));
 
         console.log('\n--- FINAL PDF CONTENT ---');
         const finalText = textElements.map(el => el.text).join('\n');
         console.log(finalText || '[No translatable text found]');
 
-        // Now pass the ARRAY of objects, not just text
         detectParasAndHeaders(textElements);
+
     } catch (err) {
         console.error(`\n[!] ERROR: ${err.message}`);
+    } finally {
+        // [NEW] Ensure the MongoDB connection is closed after processing is complete
+        if (client) {
+            await client.close();
+            console.log("\n[Note] MongoDB connection closed.");
+        }
     }
 }
 
