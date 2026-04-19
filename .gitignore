@@ -3,3 +3,8 @@ test-pdfs
 *.pdf
 node_modules/
 .env
+uploads/
+*.odt
+*.docx
+*.~lock.*
+package-lock.json
