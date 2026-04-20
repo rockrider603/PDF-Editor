@@ -57,9 +57,9 @@ function buildAppearancesForPage(buffer, pdfString, pageObjStr, nameMap) {
  *
  * @param {Buffer} buffer
  * @param {string} pdfString
- * @returns {{ bytes: Buffer, metadata: object, format: string, extension: string, objNum: number, role: string, appearances: object[] }[]}
+ * @returns {Promise<{ bytes: Buffer, metadata: object, format: string, extension: string, objNum: number, role: string, appearances: object[] }[]>}
  */
-function scanPageImages(buffer, pdfString) {
+async function scanPageImages(buffer, pdfString) {
     console.log('--- Starting Full PDF Image Scan ---');
 
     const allObjectIds = new Set();
@@ -85,7 +85,7 @@ function scanPageImages(buffer, pdfString) {
     const results = [];
     for (const objNum of allObjectIds) {
         try {
-            const decoded = decodeImageObject(buffer, pdfString, objNum);
+            const decoded = await decodeImageObject(buffer, pdfString, objNum);
             if (!decoded) continue;
 
             results.push({

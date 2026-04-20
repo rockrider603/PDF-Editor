@@ -104,9 +104,9 @@ function detectBackgroundObject(buffer, pdfString, pageObjStr, contentStream) {
  * @param {string} pdfString
  * @param {string} pageObjStr
  * @param {string} contentStream - Already-decompressed first-page content stream.
- * @returns {{ bytes: Buffer, metadata: object, format: string, extension: string, objNum: number, role: string, appearances: object[] } | null}
+ * @returns {Promise<{ bytes: Buffer, metadata: object, format: string, extension: string, objNum: number, role: string, appearances: object[] } | null>}
  */
-function extractBackgroundImage(buffer, pdfString, pageObjStr, contentStream) {
+async function extractBackgroundImage(buffer, pdfString, pageObjStr, contentStream) {
     console.log('\n--- Background Image Extraction ---');
 
     const detected = detectBackgroundObject(buffer, pdfString, pageObjStr, contentStream);
@@ -119,7 +119,7 @@ function extractBackgroundImage(buffer, pdfString, pageObjStr, contentStream) {
 
     let decoded;
     try {
-        decoded = decodeImageObject(buffer, pdfString, objNum);
+        decoded = await decodeImageObject(buffer, pdfString, objNum);
     } catch (err) {
         console.warn(`[Detector] Failed to decode background (obj ${objNum}): ${err.message}`);
         return null;
