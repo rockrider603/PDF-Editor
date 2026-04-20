@@ -1,6 +1,7 @@
 const sharp = require('sharp');
 const zlib = require('zlib');
 const { getObject, resolveLength } = require('../core/pdfObjectReader');
+const { PDF_REGEX } = require('../utils/pdfRegex');
 
 /**
  * Parses the image metadata fields from a PDF object's dictionary string.
@@ -9,21 +10,21 @@ const { getObject, resolveLength } = require('../core/pdfObjectReader');
  * @returns {{ width: number, height: number, filter: string, length: number }}
  */
 function parseImageMetadata(objStr) {
-    const decodeParmsBlock = objStr.match(/\/DecodeParms\s*<<([\s\S]*?)>>/);
+    const decodeParmsBlock = objStr.match(PDF_REGEX.images.decodeParmsBlock);
     const decodeParms = decodeParmsBlock?.[1] || '';
-    const colorSpace = objStr.match(/\/ColorSpace\s*\/(\w+)/)?.[1] || 'DeviceRGB';
-    const bitsPerComponent = parseInt(objStr.match(/\/BitsPerComponent\s+(\d+)/)?.[1] || 8);
+    const colorSpace = objStr.match(PDF_REGEX.images.colorSpace)?.[1] || 'DeviceRGB';
+    const bitsPerComponent = parseInt(objStr.match(PDF_REGEX.images.bitsPerComponent)?.[1] || 8);
 
     return {
-        width:  parseInt(objStr.match(/\/Width\s+(\d+)/)?.[1]  || 0),
-        height: parseInt(objStr.match(/\/Height\s+(\d+)/)?.[1] || 0),
-        filter: objStr.match(/\/Filter\s*\/(\w+)/)?.[1]        || 'None',
-        length: parseInt(objStr.match(/\/Length\s+(\d+)/)?.[1] || 0),
+        width:  parseInt(objStr.match(PDF_REGEX.images.width)?.[1]  || 0),
+        height: parseInt(objStr.match(PDF_REGEX.images.height)?.[1] || 0),
+        filter: objStr.match(PDF_REGEX.images.filter)?.[1]        || 'None',
+        length: parseInt(objStr.match(PDF_REGEX.images.length)?.[1] || 0),
         colorSpace,
         bitsPerComponent,
-        predictor: parseInt(decodeParms.match(/\/Predictor\s+(\d+)/)?.[1] || 1),
-        colors: parseInt(decodeParms.match(/\/Colors\s+(\d+)/)?.[1] || guessColorsFromColorSpace(colorSpace)),
-        columns: parseInt(decodeParms.match(/\/Columns\s+(\d+)/)?.[1] || 0)
+        predictor: parseInt(decodeParms.match(PDF_REGEX.images.predictor)?.[1] || 1),
+        colors: parseInt(decodeParms.match(PDF_REGEX.images.colors)?.[1] || guessColorsFromColorSpace(colorSpace)),
+        columns: parseInt(decodeParms.match(PDF_REGEX.images.columns)?.[1] || 0)
     };
 }
 

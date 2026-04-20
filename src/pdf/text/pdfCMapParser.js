@@ -1,3 +1,5 @@
+const { PDF_REGEX } = require('../utils/pdfRegex');
+
 function parseCMap(cmapText) {
     const map = {};
     const lines = cmapText.split('\n');
@@ -21,14 +23,14 @@ function parseCMap(cmapText) {
         }
 
         if (inSection === 'bfchar') {
-            const charMatch = trimmed.match(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/);
+            const charMatch = trimmed.match(PDF_REGEX.text.bfchar);
             if (charMatch) {
                 const srcCode = charMatch[1].toUpperCase();
                 const unicodeHex = charMatch[2];
                 map[srcCode] = unicodeHex;
             }
         } else if (inSection === 'bfrange') {
-            const rangeMatch = trimmed.match(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/);
+            const rangeMatch = trimmed.match(PDF_REGEX.text.bfrange);
             if (rangeMatch) {
                 const srcWidth = rangeMatch[1].length;
                 let startSrc = parseInt(rangeMatch[1], 16);
@@ -82,7 +84,7 @@ function getCMapCodeLengths(cmapMap) {
 
 function translateText(cmapMap, hexString) {
     let result = '';
-    const cleaned = hexString.replace(/[<>]/g, '').toUpperCase();
+    const cleaned = hexString.replace(PDF_REGEX.text.cleanedHexBrackets, '').toUpperCase();
     const codeLengths = getCMapCodeLengths(cmapMap);
     const fallbackLength = codeLengths.length ? codeLengths[codeLengths.length - 1] : 2;
 

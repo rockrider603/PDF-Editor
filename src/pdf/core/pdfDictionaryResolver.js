@@ -1,3 +1,5 @@
+const { PDF_REGEX } = require('../utils/pdfRegex');
+
 function extractInlineDictionary(str, startIdx) {
     let depth = 0;
     let i = startIdx;
@@ -27,7 +29,7 @@ function resolveDictOrRef(objStr, key) {
     if (keyIdx === -1) return null;
 
     const afterKey = objStr.slice(keyIdx + key.length).trimStart();
-    const refMatch = afterKey.match(/^(\d+\s+\d+\s+R)/);
+    const refMatch = afterKey.match(PDF_REGEX.core.leadingIndirectRef);
     if (refMatch) {
         return { type: 'ref', value: refMatch[1] };
     }

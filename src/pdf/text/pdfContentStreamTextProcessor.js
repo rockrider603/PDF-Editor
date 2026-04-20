@@ -1,4 +1,5 @@
 const { translateText } = require('./pdfCMapParser');
+const { PDF_REGEX } = require('../utils/pdfRegex');
 
 function decodePdfLiteralString(token) {
     let inner = token;
@@ -7,14 +8,14 @@ function decodePdfLiteralString(token) {
     }
 
     return inner
-        .replace(/\\\\/g, '\\')
-        .replace(/\\\(/g, '(')
-        .replace(/\\\)/g, ')')
-        .replace(/\\n/g, '\n')
-        .replace(/\\r/g, '\r')
-        .replace(/\\t/g, '\t')
-        .replace(/\\b/g, '\b')
-        .replace(/\\f/g, '\f');
+        .replace(PDF_REGEX.text.escapedBackslash, '\\')
+        .replace(PDF_REGEX.text.escapedOpenParen, '(')
+        .replace(PDF_REGEX.text.escapedCloseParen, ')')
+        .replace(PDF_REGEX.text.escapedNewline, '\n')
+        .replace(PDF_REGEX.text.escapedCarriageReturn, '\r')
+        .replace(PDF_REGEX.text.escapedTab, '\t')
+        .replace(PDF_REGEX.text.escapedBackspace, '\b')
+        .replace(PDF_REGEX.text.escapedFormFeed, '\f');
 }
 
 function processContentStream(decompressed, fonts) {
@@ -57,22 +58,22 @@ function processContentStream(decompressed, fonts) {
     }
 
     for (const line of lines) {
-        const fontMatch = line.match(/\/F(\d+)\s+(\d+)\s+Tf/);
+        const fontMatch = line.match(PDF_REGEX.text.fontTf);
         if (fontMatch) {
             currentFont = 'F' + fontMatch[1];
         }
 
         // Extract both X and Y from Tm command
-        const tmMatch = line.match(/1\s+0\s+0\s+1\s+([\-\d.]+)\s+([\-\d.]+)\s+Tm/);
+        const tmMatch = line.match(PDF_REGEX.text.tmPosition);
         if (tmMatch) {
             currentX = parseFloat(tmMatch[1]);
             currentY = parseFloat(tmMatch[2]);
             console.log(`  [Tm] Position: x=${currentX}, y=${currentY}`);
         }
 
-        const tjArrayMatch = line.match(/\[(.*?)\]\s*TJ/);
+        const tjArrayMatch = line.match(PDF_REGEX.text.tjArray);
         if (tjArrayMatch && currentFont && fonts[currentFont]) {
-            const parts = tjArrayMatch[1].match(/<([0-9A-Fa-f]+)>|\((?:\\.|[^\\)])*\)/g) || [];
+            const parts = tjArrayMatch[1].match(PDF_REGEX.text.tjParts) || [];
             let combined = '';
 
             for (const part of parts) {
@@ -91,7 +92,7 @@ function processContentStream(decompressed, fonts) {
             continue;
         }
 
-        const tjSingleMatch = line.match(/(<[0-9A-Fa-f]+>)\s*Tj/);
+        const tjSingleMatch = line.match(PDF_REGEX.text.tjSingle);
         if (tjSingleMatch && currentFont && fonts[currentFont]) {
             const hex = tjSingleMatch[1];
             const translated = translateText(fonts[currentFont].cmapMap, hex);

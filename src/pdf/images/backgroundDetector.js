@@ -2,6 +2,7 @@ const { getObject } = require('../core/pdfObjectReader');
 const { resolveDictOrRef } = require('../core/pdfDictionaryResolver');
 const { buildXObjectNameMap, parsePaintOperations } = require('./pageContentParser');
 const { decodeImageObject } = require('./imageDecoder');
+const { PDF_REGEX } = require('../utils/pdfRegex');
 
 /**
  * Parses the page /MediaBox and returns its width and height in points.
@@ -11,7 +12,7 @@ const { decodeImageObject } = require('./imageDecoder');
  * @returns {{ width: number, height: number }}
  */
 function getPageDimensions(pageObjStr) {
-    const match = pageObjStr.match(/\/MediaBox\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/);
+    const match = pageObjStr.match(PDF_REGEX.images.mediaBox);
     if (!match) {
         console.warn('[Detector] /MediaBox not found; defaulting to Letter size (612 × 792 pt).');
         return { width: 612, height: 792 };
