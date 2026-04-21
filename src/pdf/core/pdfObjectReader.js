@@ -1,8 +1,9 @@
 const zlib = require('zlib');
+const { PDF_REGEX } = require('../utils/pdfRegex');
 
 function getObject(buffer, pdfString, ref, returnBuffer = false) {
-    const [id, gen] = ref.split(/\s+/);
-    const objHeaderRegex = new RegExp(`(?:^|[\\r\\n\\s])${id}\\s+${gen}\\s+obj`, 'g');
+    const [id, gen] = ref.split(PDF_REGEX.common.whitespace);
+    const objHeaderRegex = PDF_REGEX.core.objectHeaderByIdGen(id, gen);
     const match = objHeaderRegex.exec(pdfString);
     if (!match) throw new Error(`Could not find object: ${ref}`);
     const startIdx = match.index + (match[0].length - `${id} ${gen} obj`.length);
@@ -12,7 +13,7 @@ function getObject(buffer, pdfString, ref, returnBuffer = false) {
 }
 
 function extractValue(objStr, key) {
-    const regex = new RegExp(`${key}\\s*([\\d\\s+R]+|/[\\w]+|\\d+)`);
+    const regex = PDF_REGEX.core.dictValueByKey(key);
     const match = objStr.match(regex);
     if (!match) throw new Error(`Key ${key} not found in dictionary`);
     return match[1].trim();
@@ -24,9 +25,9 @@ function resolveLength(buffer, pdfString, objBuffer) {
 
     if (lengthVal.includes('R')) {
         const lengthObj = getObject(buffer, pdfString, lengthVal);
-        const numMatch = lengthObj.match(/obj\s+(\d+)\s+endobj/s);
+        const numMatch = lengthObj.match(PDF_REGEX.core.indirectLengthObject);
         if (!numMatch) {
-            const directNum = lengthObj.match(/^(\d+)$/m);
+            const directNum = lengthObj.match(PDF_REGEX.core.directNumericLine);
             if (directNum) return parseInt(directNum[1]);
             throw new Error('Could not parse indirect length value');
         }

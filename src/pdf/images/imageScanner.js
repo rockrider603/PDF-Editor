@@ -1,6 +1,7 @@
 const { getObject, extractValue, resolveLength, decompressStream } = require('../core/pdfObjectReader');
 const { buildXObjectNameMap, parsePaintOperations } = require('./pageContentParser');
 const { decodeImageObject } = require('./imageDecoder');
+const { PDF_REGEX } = require('../utils/pdfRegex');
 
 /**
  * Builds the list of all XObject paint appearances (position + size) for
@@ -57,15 +58,15 @@ function buildAppearancesForPage(buffer, pdfString, pageObjStr, nameMap) {
  *
  * @param {Buffer} buffer
  * @param {string} pdfString
- * @returns {{ bytes: Buffer, metadata: object, format: string, extension: string, objNum: number, role: string, appearances: object[] }[]}
+ * @returns {Promise<{ bytes: Buffer, metadata: object, format: string, extension: string, objNum: number, role: string, appearances: object[] }[]>}
  */
-function scanPageImages(buffer, pdfString) {
+async function scanPageImages(buffer, pdfString) {
     console.log('--- Starting Full PDF Image Scan ---');
 
     const allObjectIds = new Set();
     const globalAppearances = new Map();
 
-    for (const match of pdfString.matchAll(/(\d+\s+\d+\s+obj[\s\S]*?\/Type\s*\/Page[\s\S]*?endobj)/g)) {
+    for (const match of pdfString.matchAll(PDF_REGEX.images.pageObjectBlock)) {
         const pageObjStr = match[0];
         const nameMap = buildXObjectNameMap(buffer, pdfString, pageObjStr);
 
@@ -85,7 +86,7 @@ function scanPageImages(buffer, pdfString) {
     const results = [];
     for (const objNum of allObjectIds) {
         try {
-            const decoded = decodeImageObject(buffer, pdfString, objNum);
+            const decoded = await decodeImageObject(buffer, pdfString, objNum);
             if (!decoded) continue;
 
             results.push({

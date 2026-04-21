@@ -1,6 +1,7 @@
 const { getObject, extractValue, resolveLength, decompressStream } = require('../core/pdfObjectReader');
 const { resolveDictOrRef } = require('../core/pdfDictionaryResolver');
 const { parseCMap, buildCharMap } = require('./pdfCMapParser');
+const { PDF_REGEX } = require('../utils/pdfRegex');
 
 function findFontAndCMap(buffer, pdfString, pageObjStr) {
     const resEntry = resolveDictOrRef(pageObjStr, '/Resources');
@@ -18,10 +19,10 @@ function findFontAndCMap(buffer, pdfString, pageObjStr) {
         : fontEntry.value;
 
     const fonts = {};
-    const fontNameMatch = fontDictObj.match(/\/(\w+)\s+(\d+\s+\d+\s+R)/g);
+    const fontNameMatch = fontDictObj.match(PDF_REGEX.text.fontNameRefEntries);
     if (fontNameMatch) {
         for (const fm of fontNameMatch) {
-            const parts = fm.split(/\s+/);
+            const parts = fm.split(PDF_REGEX.common.whitespace);
             const fontName = parts[0].replace('/', '');
             const fontRef = parts.slice(1).join(' ');
             const fontObj = getObject(buffer, pdfString, fontRef);
