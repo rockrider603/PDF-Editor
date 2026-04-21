@@ -7,6 +7,9 @@ const { getObject, resolveLength } = require('../core/pdfObjectReader');
  * @param {string} objStr - String representation of the PDF object.
  * @returns {{ width: number, height: number, filter: string, length: number }}
  */
+
+
+
 function parseImageMetadata(objStr) {
     return {
         width:  parseInt(objStr.match(/\/Width\s+(\d+)/)?.[1]  || 0),
