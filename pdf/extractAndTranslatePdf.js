@@ -21,6 +21,7 @@ const { storePageImages, storeBackgroundImage } = require('./images/imageStorage
  *   6. Scan and store all remaining page images
  *
  * @param {string} filePath - Absolute or relative path to the input PDF.
+ * @returns {object} Structured extraction results
  */
 async function extractAndTranslatePdf(filePath) {
     try {
@@ -70,7 +71,7 @@ async function extractAndTranslatePdf(filePath) {
         console.log(textElements.map(el => el.text).join('\n') || '[No translatable text found]');
 
         // ── 4. Classification ─────────────────────────────────────────────────
-        detectParasAndHeaders(textElements);
+        const classification = detectParasAndHeaders(textElements);
 
         // ── 5. Background Image ───────────────────────────────────────────────
         const bgImage = extractBackgroundImage(buffer, pdfString, pageObj, contentStream);
@@ -83,8 +84,42 @@ async function extractAndTranslatePdf(filePath) {
         }
         storePageImages(pageImages);
 
+        // ── 7. Return Structured Data ─────────────────────────────────────────
+        return {
+            success: true,
+            fileName: path.basename(filePath),
+            extractedAt: new Date().toISOString(),
+            structure: {
+                rootRef,
+                pagesRef,
+                firstPageRef,
+                contentsRef,
+                streamLength
+            },
+            text: {
+                rawElements: textElements,
+                fullText: textElements.map(el => el.text).join('\n') || '[No translatable text found]',
+                classification
+            },
+            images: {
+                background: bgImage,
+                pageImages: pageImages,
+                totalImages: pageImages.length + (bgImage ? 1 : 0)
+            },
+            fonts: Object.keys(fonts).map(name => ({
+                name,
+                cmapEntries: Object.keys(fonts[name].cmapMap).length
+            }))
+        };
+
     } catch (err) {
         console.error(`\n[!] ERROR: ${err.message}`);
+        return {
+            success: false,
+            fileName: path.basename(filePath),
+            error: err.message,
+            extractedAt: new Date().toISOString()
+        };
     }
 }
 

@@ -1,8 +1,0 @@
-import axios from "axios";
-
-//axios helps you talk to the server.
-export const axiosInstance = axios.create({
-  baseURL: import.meta.env.MODE === "development" ? "http://localhost:5001/api" : "/api",
-  withCredentials: true,
-});
-

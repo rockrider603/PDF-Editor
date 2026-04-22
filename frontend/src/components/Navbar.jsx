@@ -32,13 +32,7 @@ const Navbar = () => {
 
       {/* Desktop Navigation */}
       <div className="flex-none gap-2 hidden md:flex">
-        <Link
-          to="/"
-          className={`btn btn-sm btn-ghost gap-2 ${isActive("/") ? "btn-active" : ""}`}
-        >
-          <Home size={18} />
-          <span className="hidden lg:inline">Home</span>
-        </Link>
+        
 
         <Link
           to="/upload"
@@ -53,11 +47,7 @@ const Navbar = () => {
           <span className="hidden lg:inline">{theme === "dark" ? "Light" : "Dark"}</span>
         </button>
 
-        {authUser && (
-          <button onClick={handleLogout} className="btn btn-sm btn-ghost text-error">
-            <LogOut size={18} />
-          </button>
-        )}
+        
       </div>
 
       {/* Mobile Menu Button */}

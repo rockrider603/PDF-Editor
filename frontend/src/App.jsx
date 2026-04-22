@@ -1,45 +1,29 @@
-import Navbar from "./components/Navbar";
+import React from "react";
+import { Routes, Route, Navigate } from "react-router-dom";
+import { Toaster } from "react-hot-toast";
 
+import Navbar from "./components/Navbar";
 import UploadPage from "./pages/UploadPage";
 import EditingPage from "./pages/EditingPage";
 
-import { Routes, Route } from "react-router-dom";
-import { useAuthStore } from "./store/useAuthStore";
 import { useThemeStore } from "./store/useThemeStore";
-import { useEffect } from "react";
-import React from "react";
-import { Toaster } from "react-hot-toast";
 
 const App = () => {
-  const { initializeApp, isAppReady } = useAuthStore();
   const { theme } = useThemeStore();
-
-  useEffect(() => {
-    initializeApp();
-  }, [initializeApp]);
-
-  if (!isAppReady) {
-    return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="text-center">
-          <span className="loading loading-lg"></span>
-          <p className="mt-4 text-gray-600">Loading PDF Editor...</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div data-theme={theme}>
+    <div data-theme={theme} className="min-h-screen transition-colors duration-300">
       <Navbar />
 
-      <Routes>
-        <Route path="/upload" element={<UploadPage />} />
-        <Route path="/" element={<UploadPage />} />
-        <Route path="/edit/:pdfid" element={<EditingPage />} />
-      </Routes>
+      <main className="container mx-auto px-4 py-8">
+        <Routes>
+          <Route path="/" element={<UploadPage />} />
+          <Route path="/upload" element={<UploadPage />} />
+          <Route path="/edit" element={<EditingPage />} />
+          <Route path="*" element={<Navigate to="/" />} />
+        </Routes>
+      </main>
 
-      <Toaster />
+      <Toaster position="bottom-right" reverseOrder={false} />
     </div>
   );
 };

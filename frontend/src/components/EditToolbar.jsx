@@ -23,9 +23,11 @@ const EditToolbar = ({
   onShare,
   onDelete,
   isLoading = false,
+  activeTool = null,
 }) => {
   const [activeColor, setActiveColor] = useState("#FFFF00");
   const [activeSize, setActiveSize] = useState("medium");
+  const [localActiveTool, setLocalActiveTool] = useState(activeTool);
 
   const toolIcons = {
     highlight: Highlighter,
@@ -50,11 +52,19 @@ const EditToolbar = ({
         <div className="flex flex-wrap gap-2">
           {EDITING_TOOLS.map((tool) => {
             const Icon = toolIcons[tool.id];
+            const isActive = localActiveTool === tool.id;
             return (
               <button
                 key={tool.id}
-                onClick={() => onTool(tool.id)}
-                className="btn btn-sm btn-outline gap-2 hover:btn-primary"
+                onClick={() => {
+                  setLocalActiveTool(isActive ? null : tool.id);
+                  onTool(isActive ? null : tool.id);
+                }}
+                className={`btn btn-sm gap-2 transition-all ${
+                  isActive
+                    ? "btn-primary"
+                    : "btn-outline hover:btn-primary"
+                }`}
                 title={tool.label}
                 disabled={isLoading}
               >
