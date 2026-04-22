@@ -5,6 +5,7 @@ import {
   Type,
   StickyNote,
   Crop,
+  Underline,
   Download,
   Save,
   RotateCcw,
@@ -29,7 +30,7 @@ const EditToolbar = ({
   const toolIcons = {
     highlight: Highlighter,
     strikethrough: Type,
-    underline: Underline2,
+    underline: Underline,
     notes: StickyNote,
     crop: Crop,
   };

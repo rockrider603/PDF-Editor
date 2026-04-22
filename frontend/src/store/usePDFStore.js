@@ -3,7 +3,6 @@ import toast from "react-hot-toast";
 import { axiosInstance } from "../lib/axios.js";
 
 export const usePDFStore = create((set, get) => ({
-  // State
   pdfs: [],
   currentPDF: null,
   isLoading: false,
@@ -12,7 +11,6 @@ export const usePDFStore = create((set, get) => ({
   error: null,
   pdfContent: null,
 
-  // Actions
   uploadPDF: async (file) => {
     set({ isUploading: true, uploadProgress: 0, error: null });
     

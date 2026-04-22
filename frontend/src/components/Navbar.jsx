@@ -8,7 +8,7 @@ const Navbar = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const location = useLocation();
 
-  // Mocking authUser and logout - ensure these are imported/defined in your real app
+  
   const authUser = true; 
   const handleLogout = () => {
     console.log("Logging out...");

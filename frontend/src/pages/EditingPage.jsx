@@ -33,12 +33,10 @@ const EditingPage = () => {
   const handleToolSelection = (toolId) => {
     setSelectedTool(toolId);
     console.log("Selected tool:", toolId);
-    // Tool logic would be implemented here
   };
 
   const handleDownload = async () => {
     try {
-      // Download logic
       const response = await fetch(`/api/pdf/${pdfId}/download`);
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -57,7 +55,6 @@ const EditingPage = () => {
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      // Save logic
       console.log("Saving annotations:", annotations);
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
@@ -167,7 +164,6 @@ const EditingPage = () => {
 
         {/* PDF Viewer and Editor */}
         <div className="mt-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
-          {/* Main Editor */}
           <div className="lg:col-span-3">
             <div className="card bg-base-100 shadow-xl p-6">
               <div className="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center bg-gray-50">
