@@ -9,6 +9,9 @@ const { PDF_REGEX } = require('../utils/pdfRegex');
  * @param {string} objStr - String representation of the PDF object.
  * @returns {{ width: number, height: number, filter: string, length: number }}
  */
+
+
+
 function parseImageMetadata(objStr) {
     const decodeParmsBlock = objStr.match(PDF_REGEX.images.decodeParmsBlock);
     const decodeParms = decodeParmsBlock?.[1] || '';

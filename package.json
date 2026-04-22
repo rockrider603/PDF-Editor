@@ -11,6 +11,9 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "sharp": "^0.34.5"
+    "@tailwindcss/vite": "^4.2.4",
+    "daisyui": "^5.5.19",
+    "sharp": "^0.34.5",
+    "tailwindcss": "^4.2.4"
   }
 }
