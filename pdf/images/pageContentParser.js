@@ -1,5 +1,6 @@
 const { getObject } = require('../core/pdfObjectReader');
 const { resolveDictOrRef } = require('../core/pdfDictionaryResolver');
+const { PDF_REGEX } = require('../utils/pdfRegex');
 
 /**
  * Builds a map of { xObjectLocalName → pdfObjectNumber } for every image
@@ -29,7 +30,7 @@ function buildXObjectNameMap(buffer, pdfString, pageObjStr) {
         ? getObject(buffer, pdfString, xObjectEntry.value)
         : xObjectEntry.value;
 
-    for (const [, name, objNum] of xObjectDict.matchAll(/\/([^\s/<>]+)\s+(\d+)\s+\d+\s+R/g)) {
+    for (const [, name, objNum] of xObjectDict.matchAll(PDF_REGEX.images.xObjectRefEntries)) {
         const objContent = getObject(buffer, pdfString, `${objNum} 0 R`);
         if (objContent.includes('/Image')) {
             nameToObjNum.set(name, parseInt(objNum, 10));
@@ -55,7 +56,7 @@ function buildXObjectNameMap(buffer, pdfString, pageObjStr) {
  */
 function parsePaintOperations(contentStream) {
     const operations = [];
-    const lines = contentStream.split(/\r\n|\r|\n/);
+    const lines = contentStream.split(PDF_REGEX.common.lineBreaks);
 
     let currentMatrix = [1, 0, 0, 1, 0, 0];
     let pendingMatrix = null;
@@ -76,14 +77,12 @@ function parsePaintOperations(contentStream) {
             continue;
         }
 
-        const cmMatch = trimmed.match(
-            /([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+cm\b/
-        );
+        const cmMatch = trimmed.match(PDF_REGEX.images.cmOperation);
         if (cmMatch) {
             pendingMatrix = cmMatch.slice(1).map(Number);
         }
 
-        const doMatch = trimmed.match(/\/([^\s/]+)\s+Do\b/);
+        const doMatch = trimmed.match(PDF_REGEX.images.doOperation);
         if (doMatch) {
             operations.push({
                 name: doMatch[1],

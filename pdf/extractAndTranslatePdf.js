@@ -74,11 +74,11 @@ async function extractAndTranslatePdf(filePath) {
         const classification = detectParasAndHeaders(textElements);
 
         // ── 5. Background Image ───────────────────────────────────────────────
-        const bgImage = extractBackgroundImage(buffer, pdfString, pageObj, contentStream);
+        const bgImage = await extractBackgroundImage(buffer, pdfString, pageObj, contentStream);
         storeBackgroundImage(bgImage);
 
         // ── 6. Page Images ────────────────────────────────────────────────────
-        let pageImages = scanPageImages(buffer, pdfString);
+        let pageImages = await scanPageImages(buffer, pdfString);
         if (bgImage) {
             pageImages = pageImages.filter(img => img.objNum !== bgImage.objNum);
         }
