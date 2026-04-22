@@ -1,4 +1,4 @@
-const { extractAndTranslatePdf } = require('./src/pdf/extractAndTranslatePdf');
+const { extractAndTranslatePdf } = require('./backend/pdf/extractAndTranslatePdf');
 
 const target = process.argv[2];
 if (!target) {
