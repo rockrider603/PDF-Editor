@@ -7,7 +7,6 @@ import { usePDFStore } from "../store/usePDFStore";
 
 const EditingPage = () => {
   const navigate = useNavigate();
-  // We grab currentPDF directly from the store instead of fetching by ID
   const { currentPDF, isLoading, extractedContent, extractedImages } = usePDFStore();
   
   const [annotations, setAnnotations] = useState([]);
@@ -16,7 +15,6 @@ const EditingPage = () => {
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   useEffect(() => {
-    // SECURITY CHECK: If user refreshes the page or navigates here without a file
     if (!currentPDF && !isLoading) {
       console.warn("No PDF found in state, redirecting...");
       navigate("/upload");
@@ -27,7 +25,6 @@ const EditingPage = () => {
 
   const handleDownload = () => {
     if (!currentPDF) return;
-    // Download logic for local file
     const url = URL.createObjectURL(currentPDF);
     const a = document.createElement("a");
     a.href = url;
@@ -40,7 +37,6 @@ const EditingPage = () => {
 
   const handleSave = async () => {
     setIsSaving(true);
-    // Locally, "Saving" might just mean updating your local annotations state
     setTimeout(() => {
       setSaveSuccess(true);
       setIsSaving(false);
@@ -48,9 +44,7 @@ const EditingPage = () => {
     }, 1000);
   };
 
-  // ... Other handlers (handleReset, handleShare, handleDelete) simplified for local use ...
-
-  if (!currentPDF) return null; // Component will redirect via useEffect
+  if (!currentPDF) return null; 
 
   return (
     <div className="min-h-screen bg-base-100">
@@ -76,7 +70,6 @@ const EditingPage = () => {
         <div className="mt-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
           <div className="lg:col-span-3">
             <div className="card bg-base-100 shadow-xl p-6">
-              {/* You will pass the raw file to your viewer here */}
               <PDFViewer 
                 file={currentPDF}
                 extractedContent={extractedContent}
