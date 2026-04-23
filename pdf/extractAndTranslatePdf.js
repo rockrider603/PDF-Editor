@@ -31,23 +31,36 @@ async function extractAndTranslatePdf(filePath) {
         const pdfString = buffer.toString('binary');
 
         // ── 1. Structure ─────────────────────────────────────────────────────
-        const rootRef     = findRootRef(pdfString);
+        const rootRef = findRootRef(pdfString);
+        if (!rootRef) throw new Error('[Step 1] findRootRef returned null — trailer /Root not found');
         console.log(`[1] Trailer -> Root: ${rootRef}`);
 
-        const rootObj     = getObject(buffer, pdfString, rootRef);
-        const pagesRef    = extractValue(rootObj, '/Pages');
+        const rootObj = getObject(buffer, pdfString, rootRef);
+        if (!rootObj) throw new Error(`[Step 1] getObject failed for Root: ${rootRef}`);
+
+        const pagesRef = extractValue(rootObj, '/Pages');
+        if (!pagesRef) throw new Error(`[Step 2] extractValue("/Pages") returned empty — rootObj:\n${rootObj}`);
         console.log(`[2] Root -> Pages: ${pagesRef}`);
 
-        const pagesObj    = getObject(buffer, pdfString, pagesRef);
+        const pagesObj = getObject(buffer, pdfString, pagesRef);
+        if (!pagesObj) throw new Error(`[Step 2] getObject failed for Pages: ${pagesRef}`);
+
         const firstPageRef = extractFirstKid(pagesObj, pagesRef);
+        if (!firstPageRef) throw new Error(`[Step 3] extractFirstKid returned null — pagesObj:\n${pagesObj}`);
         console.log(`[3] Pages -> First Page: ${firstPageRef}`);
 
-        const pageObj     = getObject(buffer, pdfString, firstPageRef);
+        const pageObj = getObject(buffer, pdfString, firstPageRef);
+        if (!pageObj) throw new Error(`[Step 3] getObject failed for first page: ${firstPageRef}`);
+
         const contentsRef = extractValue(pageObj, '/Contents');
+        if (!contentsRef) throw new Error(`[Step 4] extractValue("/Contents") returned empty — pageObj:\n${pageObj}`);
         console.log(`[4] Page -> Contents: ${contentsRef}`);
 
         const contentsBuffer = getObject(buffer, pdfString, contentsRef, true);
-        const streamLength   = resolveLength(buffer, pdfString, contentsBuffer);
+        if (!contentsBuffer || contentsBuffer.length === 0) throw new Error(`[Step 4] getObject returned empty buffer for Contents: "${contentsRef}"`);
+
+        const streamLength = resolveLength(buffer, pdfString, contentsBuffer);
+        if (!streamLength || streamLength <= 0) throw new Error(`[Step 5] resolveLength returned invalid value: ${streamLength}`);
         console.log(`[5] Content Stream Length: ${streamLength} bytes`);
 
         // ── 2. Content Stream ─────────────────────────────────────────────────
