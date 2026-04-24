@@ -1,0 +1,18 @@
+{
+  "name": "pdf-parser",
+  "version": "1.0.0",
+  "description": "Browser-compatible PDF parsing SDK — ported from the PDF-Editor Node.js pipeline. Exposes a factory+adapter pattern API with full tree-shaking support.",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./core":   "./src/core/index.js",
+    "./text":   "./src/text/index.js",
+    "./images": "./src/images/index.js"
+  },
+  "dependencies": {
+    "pako": "^2.1.0"
+  },
+  "keywords": ["pdf", "parser", "browser", "esm"],
+  "license": "ISC"
+}
