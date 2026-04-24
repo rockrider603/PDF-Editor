@@ -73,11 +73,10 @@ const PDFViewer = ({
     );
   }
 
-  // ── Headers & Paragraphs from classification (preferred) ──────────────────
-  // Fall back to all rawElements if classification produced nothing.
-  const classifiedHeaders    = classification?.detailed?.headers    ?? [];
-  const classifiedParagraphs = classification?.detailed?.paragraphs ?? [];
-  const hasClassified = classifiedHeaders.length > 0 || classifiedParagraphs.length > 0;
+  // ── Headers & Paragraphs from classification ──────────────────────────────
+  // We use classification just for styling (bold vs normal).
+  // The actual coordinates are taken from textElements directly.
+  const headerTexts = new Set(classification?.headers ?? []);
 
   return (
     <div className="overflow-auto rounded-lg shadow-xl border border-gray-200" style={{ maxWidth: '100%' }}>
@@ -137,87 +136,33 @@ const PDFViewer = ({
         })}
 
         {/* ── Layer 2: Text ────────────────────────────────────────────────── */}
-        {hasClassified ? (
-          <>
-            {/* Headers */}
-            {classifiedHeaders.map((h, idx) => {
-              const cssX = h.xPosition * scale;
-              const cssY = toCanvasY(h.yPosition, h.height ?? h.fontSize, pageHeight, scale);
-              return (
-                <div
-                  key={`hdr-${idx}`}
-                  title={`Header: ${h.text}`}
-                  style={{
-                    position: 'absolute',
-                    left: cssX,
-                    top: cssY,
-                    fontSize: (h.fontSize ?? 14) * scale,
-                    fontFamily: 'sans-serif',
-                    fontWeight: 'bold',
-                    whiteSpace: 'nowrap',
-                    color: '#111827',
-                    zIndex: 2,
-                    cursor: selectedTool ? 'pointer' : 'default',
-                    userSelect: 'none',
-                  }}
-                >
-                  {h.text}
-                </div>
-              );
-            })}
+        {textElements.map((el, idx) => {
+          const cssX = el.x * scale;
+          const cssY = toCanvasY(el.y, el.fontSize ?? 12, pageHeight, scale);
+          const isHeader = headerTexts.has(el.text);
 
-            {/* Paragraphs */}
-            {classifiedParagraphs.map((p, idx) => {
-              const cssX = p.xPosition * scale;
-              const cssY = toCanvasY(p.yPosition, p.height ?? p.fontSize, pageHeight, scale);
-              return (
-                <div
-                  key={`para-${idx}`}
-                  title={`Paragraph: ${p.text}`}
-                  style={{
-                    position: 'absolute',
-                    left: cssX,
-                    top: cssY,
-                    fontSize: (p.fontSize ?? 11) * scale,
-                    fontFamily: 'sans-serif',
-                    fontWeight: 'normal',
-                    whiteSpace: 'nowrap',
-                    color: '#1f2937',
-                    zIndex: 2,
-                    cursor: selectedTool ? 'pointer' : 'default',
-                    userSelect: 'none',
-                  }}
-                >
-                  {p.text}
-                </div>
-              );
-            })}
-          </>
-        ) : (
-          // Fallback — render all raw elements if classifier found nothing
-          textElements.map((el, idx) => {
-            const cssX = el.x * scale;
-            const cssY = toCanvasY(el.y, el.height ?? el.fontSize, pageHeight, scale);
-            return (
-              <div
-                key={`el-${idx}`}
-                style={{
-                  position: 'absolute',
-                  left: cssX,
-                  top: cssY,
-                  fontSize: (el.fontSize ?? 11) * scale,
-                  fontFamily: 'sans-serif',
-                  whiteSpace: 'nowrap',
-                  color: '#1f2937',
-                  zIndex: 2,
-                  userSelect: 'none',
-                }}
-              >
-                {el.text}
-              </div>
-            );
-          })
-        )}
+          return (
+            <div
+              key={`el-${idx}`}
+              style={{
+                position: 'absolute',
+                left: cssX,
+                top: cssY,
+                fontSize: (el.fontSize ?? 12) * scale,
+                fontFamily: 'serif',
+                fontWeight: isHeader ? 'bold' : 'normal',
+                whiteSpace: 'nowrap',
+                color: isHeader ? '#111827' : '#1f2937',
+                zIndex: 2,
+                userSelect: 'none',
+                cursor: selectedTool ? 'pointer' : 'default',
+                lineHeight: 1,
+              }}
+            >
+              {el.text}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

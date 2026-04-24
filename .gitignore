@@ -8,3 +8,4 @@ uploads/
 *.docx
 *.~lock.*
 package-lock.json
+debug/
