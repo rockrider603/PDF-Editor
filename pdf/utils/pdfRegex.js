@@ -63,14 +63,14 @@ const PDF_REGEX = {
         // Font Dictionary — matches entries like "/F1 3 0 R" inside a font dict
         fontNameRefEntries: /\/[A-Za-z0-9]+\s+\d+\s+\d+\s+R/g,
 
-        // Content Stream — font selection: "/F1 12 Tf" → captures the digit(s) after /F
-        fontTf: /\/F(\d+)\s+[\d.]+\s+Tf/,
+        // Content Stream — font selection: "/F1 12 Tf" → captures the digit(s) after /F (font number) and the size (e.g. 12)
+        fontTf: /\/F(\d+)\s+([\d.]+)\s+Tf/,
 
         // Content Stream — text position: "x y Td" or "a b c d x y Tm" → captures x, y
         tmPosition: /(-?[\d.]+)\s+(-?[\d.]+)\s+(?:Td|Tm)/,
 
-        // Content Stream — TJ array: "[<hex>18<hex>]TJ" → captures inner content
-        tjArray: /\[([^\]]+)\]TJ/,
+        // Content Stream — TJ array: "[<hex>18<hex>]TJ" or "[<hex>] TJ" → captures inner content
+        tjArray: /\[([^\]]+)\]\s*TJ/,
 
         // Content Stream — individual parts inside a TJ array (hex strings or kern numbers)
         tjParts: /<[^>]+>|-?\d+/g,
