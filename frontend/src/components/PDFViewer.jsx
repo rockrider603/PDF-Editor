@@ -1,256 +1,224 @@
-import React, { useState } from "react";
-import { Image as ImageIcon, Type } from "lucide-react";
+import React from "react";
+import { Loader2 } from "lucide-react";
 
-const PDFViewer = ({ extractedContent, extractedImages, selectedTool, onTextSelect }) => {
-  const [displayMode, setDisplayMode] = useState("content"); // 'content' or 'images'
+// Fixed display width of the canvas in CSS pixels.
+// The canvas height is computed from the PDF's aspect ratio.
+const CANVAS_WIDTH = 850;
 
-  if (!extractedContent && !extractedImages) {
+/**
+ * Flips a PDF Y coordinate (bottom-left origin) to a CSS Y coordinate
+ * (top-left origin) and applies the scale factor.
+ *
+ * @param {number} pdfY       - Element's Y position in PDF user-space points
+ * @param {number} elHeight   - Element's height in PDF user-space points
+ * @param {number} pageHeight - Full page height in PDF user-space points
+ * @param {number} scale      - Points-to-pixels scale factor
+ * @returns {number} CSS top value in pixels
+ */
+function toCanvasY(pdfY, elHeight, pageHeight, scale) {
+  return (pageHeight - pdfY - elHeight) * scale;
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
+/**
+ * PDFViewer renders a pixel-accurate canvas reconstruction of the PDF page.
+ *
+ * Three stacked layers (all position:absolute inside a position:relative box):
+ *   Layer 0 (z=0) — Background image, fills the entire canvas
+ *   Layer 1 (z=1) — Page images, placed at their PDF coordinates
+ *   Layer 2 (z=2) — Text (headers + paragraphs), placed at their PDF coordinates
+ *
+ * @param {{ pageWidth, pageHeight, textElements, classification, images, isLoading, selectedTool }} props
+ */
+const PDFViewer = ({
+  pageWidth = 612,
+  pageHeight = 792,
+  textElements = [],
+  classification = null,
+  images = { background: null, pageImages: [] },
+  isLoading = false,
+  selectedTool = null,
+}) => {
+  const scale = CANVAS_WIDTH / pageWidth;
+  const canvasHeight = pageHeight * scale;
+
+  // ── Loading State ──────────────────────────────────────────────────────────
+  if (isLoading) {
     return (
-      <div className="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center bg-gray-50 min-h-96">
-        <p className="text-gray-600 mb-4">No extracted content available</p>
-        <p className="text-sm text-gray-500">
-          The PDF content is being processed. Please refresh the page in a moment.
-        </p>
+      <div
+        className="flex flex-col items-center justify-center bg-white rounded-lg border border-gray-200 shadow-inner"
+        style={{ width: CANVAS_WIDTH, height: Math.min(canvasHeight, 600) }}
+      >
+        <Loader2 size={40} className="animate-spin text-primary mb-4" />
+        <p className="text-gray-500 text-sm">Parsing PDF…</p>
       </div>
     );
   }
 
-  return (
-    <div className="bg-white rounded-lg border border-gray-200">
-      {/* Display Mode Tabs */}
-      <div className="flex gap-2 border-b border-gray-200 p-4">
-        {extractedContent && (
-          <button
-            onClick={() => setDisplayMode("content")}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all ${
-              displayMode === "content"
-                ? "bg-primary text-white"
-                : "bg-base-200 text-gray-700 hover:bg-base-300"
-            }`}
-          >
-            <Type size={18} />
-            <span>Text Content</span>
-          </button>
-        )}
-        {extractedImages && (
-          <button
-            onClick={() => setDisplayMode("images")}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all ${
-              displayMode === "images"
-                ? "bg-primary text-white"
-                : "bg-base-200 text-gray-700 hover:bg-base-300"
-            }`}
-          >
-            <ImageIcon size={18} />
-            <span>
-              Images ({extractedImages.pageImages?.length || 0})
-            </span>
-          </button>
-        )}
-      </div>
+  const hasContent =
+    textElements.length > 0 ||
+    images.background ||
+    (images.pageImages && images.pageImages.length > 0);
 
-      {/* Content Display Area */}
-      <div className="p-6 min-h-96 max-h-96 overflow-y-auto">
-        {displayMode === "content" && extractedContent && (
-          <ContentDisplay
-            textElements={extractedContent.rawElements}
-            classification={extractedContent.classification}
-            selectedTool={selectedTool}
-            onTextSelect={onTextSelect}
+  // ── Empty State ────────────────────────────────────────────────────────────
+  if (!hasContent) {
+    return (
+      <div
+        className="flex flex-col items-center justify-center bg-white rounded-lg border-2 border-dashed border-gray-300"
+        style={{ width: CANVAS_WIDTH, height: Math.max(canvasHeight, 400) }}
+      >
+        <p className="text-gray-400 text-sm">No content extracted from this PDF</p>
+      </div>
+    );
+  }
+
+  // ── Headers & Paragraphs from classification (preferred) ──────────────────
+  // Fall back to all rawElements if classification produced nothing.
+  const classifiedHeaders    = classification?.detailed?.headers    ?? [];
+  const classifiedParagraphs = classification?.detailed?.paragraphs ?? [];
+  const hasClassified = classifiedHeaders.length > 0 || classifiedParagraphs.length > 0;
+
+  return (
+    <div className="overflow-auto rounded-lg shadow-xl border border-gray-200" style={{ maxWidth: '100%' }}>
+      {/* Page canvas — white box, exact PDF aspect ratio */}
+      <div
+        id="pdf-canvas"
+        style={{
+          position: 'relative',
+          width: CANVAS_WIDTH,
+          height: canvasHeight,
+          backgroundColor: '#ffffff',
+          overflow: 'hidden',
+          flexShrink: 0,
+        }}
+      >
+        {/* ── Layer 0: Background Image ────────────────────────────────────── */}
+        {images.background?.dataUrl && (
+          <img
+            src={images.background.dataUrl}
+            alt="PDF background"
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: '100%',
+              objectFit: 'fill',
+              zIndex: 0,
+              pointerEvents: 'none',
+            }}
           />
         )}
-        {displayMode === "images" && extractedImages && (
-          <ImagesDisplay
-            backgroundImage={extractedImages.background}
-            pageImages={extractedImages.pageImages}
-          />
+
+        {/* ── Layer 1: Page Images ─────────────────────────────────────────── */}
+        {(images.pageImages ?? []).map((img, idx) => {
+          const cssX = img.x * scale;
+          const cssY = toCanvasY(img.y, img.renderedHeight, pageHeight, scale);
+          const cssW = img.renderedWidth  * scale;
+          const cssH = img.renderedHeight * scale;
+
+          return (
+            <img
+              key={`img-${idx}`}
+              src={img.dataUrl}
+              alt={`PDF image ${idx + 1}`}
+              style={{
+                position: 'absolute',
+                left: cssX,
+                top: cssY,
+                width: cssW,
+                height: cssH,
+                zIndex: 1,
+                pointerEvents: 'none',
+              }}
+            />
+          );
+        })}
+
+        {/* ── Layer 2: Text ────────────────────────────────────────────────── */}
+        {hasClassified ? (
+          <>
+            {/* Headers */}
+            {classifiedHeaders.map((h, idx) => {
+              const cssX = h.xPosition * scale;
+              const cssY = toCanvasY(h.yPosition, h.height ?? h.fontSize, pageHeight, scale);
+              return (
+                <div
+                  key={`hdr-${idx}`}
+                  title={`Header: ${h.text}`}
+                  style={{
+                    position: 'absolute',
+                    left: cssX,
+                    top: cssY,
+                    fontSize: (h.fontSize ?? 14) * scale,
+                    fontFamily: 'sans-serif',
+                    fontWeight: 'bold',
+                    whiteSpace: 'nowrap',
+                    color: '#111827',
+                    zIndex: 2,
+                    cursor: selectedTool ? 'pointer' : 'default',
+                    userSelect: 'none',
+                  }}
+                >
+                  {h.text}
+                </div>
+              );
+            })}
+
+            {/* Paragraphs */}
+            {classifiedParagraphs.map((p, idx) => {
+              const cssX = p.xPosition * scale;
+              const cssY = toCanvasY(p.yPosition, p.height ?? p.fontSize, pageHeight, scale);
+              return (
+                <div
+                  key={`para-${idx}`}
+                  title={`Paragraph: ${p.text}`}
+                  style={{
+                    position: 'absolute',
+                    left: cssX,
+                    top: cssY,
+                    fontSize: (p.fontSize ?? 11) * scale,
+                    fontFamily: 'sans-serif',
+                    fontWeight: 'normal',
+                    whiteSpace: 'nowrap',
+                    color: '#1f2937',
+                    zIndex: 2,
+                    cursor: selectedTool ? 'pointer' : 'default',
+                    userSelect: 'none',
+                  }}
+                >
+                  {p.text}
+                </div>
+              );
+            })}
+          </>
+        ) : (
+          // Fallback — render all raw elements if classifier found nothing
+          textElements.map((el, idx) => {
+            const cssX = el.x * scale;
+            const cssY = toCanvasY(el.y, el.height ?? el.fontSize, pageHeight, scale);
+            return (
+              <div
+                key={`el-${idx}`}
+                style={{
+                  position: 'absolute',
+                  left: cssX,
+                  top: cssY,
+                  fontSize: (el.fontSize ?? 11) * scale,
+                  fontFamily: 'sans-serif',
+                  whiteSpace: 'nowrap',
+                  color: '#1f2937',
+                  zIndex: 2,
+                  userSelect: 'none',
+                }}
+              >
+                {el.text}
+              </div>
+            );
+          })
         )}
       </div>
-    </div>
-  );
-};
-
-const ContentDisplay = ({ textElements, classification, selectedTool, onTextSelect }) => {
-  if (!textElements || textElements.length === 0) {
-    return (
-      <div className="text-center py-8">
-        <p className="text-gray-500">No text content extracted from this PDF</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-      {/* Headers Section */}
-      {classification?.detailed?.headers?.length > 0 && (
-        <div>
-          <h3 className="font-bold text-lg mb-3 text-gray-700 flex items-center gap-2">
-            <span className="inline-block w-2 h-2 bg-primary rounded-full"></span>
-            Headers ({classification.detailed.headers.length})
-          </h3>
-          <div className="space-y-2 ml-4">
-            {classification.detailed.headers.map((header, idx) => (
-              <div
-                key={idx}
-                onClick={() => onTextSelect?.(header)}
-                className={`p-3 rounded-lg cursor-pointer transition-all ${
-                  selectedTool
-                    ? "bg-blue-50 border border-blue-200 hover:bg-blue-100"
-                    : "bg-gray-50 border border-gray-200 hover:bg-gray-100"
-                }`}
-              >
-                <p className="text-gray-900 font-semibold">{header.text}</p>
-                <p className="text-xs text-gray-500 mt-1">
-                  Position: x={header.xPosition?.toFixed(2)}, Center={header.elementCenter?.toFixed(2)}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Paragraphs Section */}
-      {classification?.detailed?.paragraphs?.length > 0 && (
-        <div>
-          <h3 className="font-bold text-lg mb-3 text-gray-700 flex items-center gap-2">
-            <span className="inline-block w-2 h-2 bg-success rounded-full"></span>
-            Paragraphs ({classification.detailed.paragraphs.length})
-          </h3>
-          <div className="space-y-2 ml-4">
-            {classification.detailed.paragraphs.map((para, idx) => (
-              <div
-                key={idx}
-                onClick={() => onTextSelect?.(para)}
-                className={`p-3 rounded-lg cursor-pointer transition-all ${
-                  selectedTool
-                    ? "bg-green-50 border border-green-200 hover:bg-green-100"
-                    : "bg-gray-50 border border-gray-200 hover:bg-gray-100"
-                }`}
-              >
-                <p className="text-gray-900">{para.text}</p>
-                <p className="text-xs text-gray-500 mt-1">
-                  Position: x={para.xPosition?.toFixed(2)}, Center={para.elementCenter?.toFixed(2)}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Other Text Elements */}
-      {textElements.length > 0 && (!classification || 
-        (classification.detailed?.headers?.length === 0 && 
-         classification.detailed?.paragraphs?.length === 0)) && (
-        <div>
-          <h3 className="font-bold text-lg mb-3 text-gray-700">Extracted Text Elements</h3>
-          <div className="space-y-2">
-            {textElements.map((element, idx) => (
-              <div
-                key={idx}
-                onClick={() => onTextSelect?.(element)}
-                className={`p-3 rounded-lg cursor-pointer transition-all ${
-                  selectedTool
-                    ? "bg-purple-50 border border-purple-200 hover:bg-purple-100"
-                    : "bg-gray-50 border border-gray-200 hover:bg-gray-100"
-                }`}
-              >
-                <p className="text-gray-900">{element.text}</p>
-                <p className="text-xs text-gray-500 mt-1">
-                  Position: x={element.x?.toFixed(2)}, y={element.y?.toFixed(2)}, width={element.width?.toFixed(2)}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-const ImagesDisplay = ({ backgroundImage, pageImages }) => {
-  const images = [...(pageImages || [])];
-  const hasImages = backgroundImage || (pageImages && pageImages.length > 0);
-
-  if (!hasImages) {
-    return (
-      <div className="text-center py-8">
-        <p className="text-gray-500">No images extracted from this PDF</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-      {/* Background Image */}
-      {backgroundImage && (
-        <div className="border-2 border-primary rounded-lg p-4 bg-primary/5">
-          <h4 className="font-semibold text-primary mb-2 flex items-center gap-2">
-            <span className="badge badge-primary">BG</span>
-            Background Image
-          </h4>
-          <div className="bg-gray-100 rounded p-4 text-center">
-            <p className="text-sm text-gray-600 mb-2">
-              {backgroundImage.metadata?.width} × {backgroundImage.metadata?.height} px
-            </p>
-            <p className="text-xs text-gray-500">
-              Filter: {backgroundImage.metadata?.filter}
-            </p>
-            <p className="text-xs text-gray-500 mt-1">
-              Object #{backgroundImage.objNum}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Page Images */}
-      {pageImages && pageImages.length > 0 && (
-        <div>
-          <h4 className="font-semibold mb-3 flex items-center gap-2">
-            <span className="badge badge-info">{pageImages.length}</span>
-            Page Images
-          </h4>
-          <div className="space-y-3">
-            {pageImages.map((img, idx) => (
-              <div key={idx} className="border border-gray-200 rounded-lg p-3 hover:border-gray-400 transition-colors">
-                <div className="flex items-start justify-between mb-2">
-                  <div>
-                    <p className="font-medium text-sm">Image {idx + 1}</p>
-                    <p className="text-xs text-gray-500">
-                      Object #{img.objNum}
-                    </p>
-                  </div>
-                  <span className="badge badge-ghost text-xs">
-                    {img.metadata?.filter}
-                  </span>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
-                  <div>
-                    <p className="text-gray-500">Dimensions</p>
-                    <p className="font-medium">
-                      {img.metadata?.width} × {img.metadata?.height} px
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">Format</p>
-                    <p className="font-medium">{img.format?.toUpperCase()}</p>
-                  </div>
-                </div>
-                {img.appearances && img.appearances.length > 0 && (
-                  <div className="mt-2 pt-2 border-t border-gray-100">
-                    <p className="text-xs text-gray-500 mb-1">Appearances:</p>
-                    {img.appearances.map((app, appIdx) => (
-                      <p key={appIdx} className="text-xs text-gray-600">
-                        Position: ({app.x?.toFixed(1)}, {app.y?.toFixed(1)}), 
-                        Size: {app.renderedWidth?.toFixed(1)} × {app.renderedHeight?.toFixed(1)}
-                      </p>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 };

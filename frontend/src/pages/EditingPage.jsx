@@ -1,27 +1,83 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, FileText } from "lucide-react";
+import { ArrowLeft, Loader2 } from "lucide-react";
 import EditToolbar from "../components/EditToolbar";
 import PDFViewer from "../components/PDFViewer";
 import { usePDFStore } from "../store/usePDFStore";
+import {
+  loadPdf,
+  getPageInfo,
+  extractText,
+  classifyText,
+  extractImages,
+} from "../lib/pdfSdk";
+import { useState } from "react";
 
 const EditingPage = () => {
   const navigate = useNavigate();
-  const { currentPDF, isLoading, extractedContent, extractedImages } = usePDFStore();
-  
-  const [annotations, setAnnotations] = useState([]);
+  const {
+    currentPDF,
+    isLoading,
+    extractedContent,
+    extractedImages,
+    pageDimensions,
+    setExtractedData,
+    setPageDimensions,
+    setIsLoading,
+  } = usePDFStore();
+
   const [selectedTool, setSelectedTool] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [parseError, setParseError] = useState(null);
 
+  // Redirect if no PDF is loaded
   useEffect(() => {
     if (!currentPDF && !isLoading) {
-      console.warn("No PDF found in state, redirecting...");
       navigate("/upload");
     }
   }, [currentPDF, isLoading, navigate]);
 
-  const handleToolSelection = (toolId) => setSelectedTool(toolId);
+  // Run the browser SDK pipeline on mount / when PDF changes
+  useEffect(() => {
+    if (!currentPDF) return;
+
+    let cancelled = false;
+
+    (async () => {
+      setIsLoading(true);
+      setParseError(null);
+      try {
+        const doc  = await loadPdf(currentPDF);
+        const page = await doc.getPage(1);
+
+        const info        = getPageInfo(page);
+        const elements    = await extractText(page);
+        const classif     = classifyText(elements, info.width);
+        const allImages   = await extractImages(page, info.height);
+
+        if (cancelled) return;
+
+        const background  = allImages.find((img) => img.role === 'background') ?? null;
+        const pageImages  = allImages.filter((img) => img.role === 'image');
+
+        setPageDimensions(info);
+        setExtractedData(
+          { rawElements: elements, classification: classif },
+          { background, pageImages }
+        );
+      } catch (err) {
+        if (!cancelled) {
+          console.error('[EditingPage] PDF parse failed:', err);
+          setParseError(err.message);
+        }
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [currentPDF]);
 
   const handleDownload = () => {
     if (!currentPDF) return;
@@ -44,54 +100,63 @@ const EditingPage = () => {
     }, 1000);
   };
 
-  if (!currentPDF) return null; 
+  if (!currentPDF) return null;
 
   return (
     <div className="min-h-screen bg-base-100">
+      {/* Header bar */}
       <div className="bg-base-200 shadow-sm p-4 mb-6">
         <div className="max-w-7xl mx-auto flex items-center gap-4">
-          <button onClick={() => navigate("/upload")} className="btn btn-ghost btn-sm gap-2">
+          <button
+            onClick={() => navigate("/upload")}
+            className="btn btn-ghost btn-sm gap-2"
+          >
             <ArrowLeft size={18} /> Back
           </button>
           <div className="flex-1">
             <h1 className="text-2xl font-bold">{currentPDF.name}</h1>
           </div>
+          {isLoading && (
+            <div className="flex items-center gap-2 text-sm text-gray-500">
+              <Loader2 size={16} className="animate-spin" />
+              Parsing PDF…
+            </div>
+          )}
         </div>
       </div>
 
       <div className="max-w-7xl mx-auto px-4 pb-8">
-        <EditToolbar 
-            onTool={handleToolSelection} 
-            onDownload={handleDownload} 
-            onSave={handleSave} 
-            activeTool={selectedTool} 
+        <EditToolbar
+          onTool={setSelectedTool}
+          onDownload={handleDownload}
+          onSave={handleSave}
+          activeTool={selectedTool}
+          isLoading={isLoading}
         />
 
-        <div className="mt-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
-          <div className="lg:col-span-3">
-            <div className="card bg-base-100 shadow-xl p-6">
-              <PDFViewer 
-                file={currentPDF}
-                extractedContent={extractedContent}
-                extractedImages={extractedImages}
-                selectedTool={selectedTool}
-              />
+        <div className="mt-6">
+          {parseError ? (
+            <div className="alert alert-error">
+              <span>Failed to parse PDF: {parseError}</span>
             </div>
-          </div>
-          
-          <div className="lg:col-span-1">
-            <div className="card bg-base-100 shadow-xl p-4">
-              <h3 className="font-semibold text-sm mb-3">Local File Info</h3>
-              <p className="text-xs truncate">Name: {currentPDF.name}</p>
-              <p className="text-xs">Size: {(currentPDF.size / 1024 / 1024).toFixed(2)} MB</p>
-            </div>
-          </div>
+          ) : (
+            <PDFViewer
+              pageWidth={pageDimensions.width}
+              pageHeight={pageDimensions.height}
+              textElements={extractedContent?.rawElements ?? []}
+              classification={extractedContent?.classification ?? null}
+              images={extractedImages ?? { background: null, pageImages: [] }}
+              selectedTool={selectedTool}
+              isLoading={isLoading}
+            />
+          )}
         </div>
       </div>
+
       {saveSuccess && (
-          <div className="alert alert-success fixed bottom-4 right-4 w-96 shadow-lg">
-            <span>✓ Local changes saved!</span>
-          </div>
+        <div className="alert alert-success fixed bottom-4 right-4 w-96 shadow-lg">
+          <span>✓ Changes saved!</span>
+        </div>
       )}
     </div>
   );
