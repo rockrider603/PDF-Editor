@@ -39,3 +39,23 @@ export function extractFirstKid(pagesObjStr, refId) {
     const refs = kidsMatch[1].trim().split(PDF_REGEX.common.whitespace);
     return `${refs[0]} ${refs[1]} ${refs[2]}`;
 }
+
+/**
+ * Extracts the Nth (0-indexed) child reference from a /Kids array.
+ */
+export function extractKidN(pagesObjStr, refId, n) {
+    const kidsMatch = pagesObjStr.match(PDF_REGEX.core.kidsArray);
+    if (!kidsMatch) throw new Error(`/Kids not found in ${refId}`);
+    const tokens = kidsMatch[1].trim().split(PDF_REGEX.common.whitespace);
+    const base   = n * 3;   // each ref = "ObjNum GenNum R" = 3 tokens
+    if (base + 2 >= tokens.length) throw new Error(`Page ${n + 1} out of range`);
+    return `${tokens[base]} ${tokens[base + 1]} ${tokens[base + 2]}`;
+}
+
+/**
+ * Returns the total page count from a /Count entry.
+ */
+export function extractPageCount(pagesObjStr) {
+    const match = pagesObjStr.match(/\/Count\s+(\d+)/);
+    return match ? parseInt(match[1], 10) : 1;
+}

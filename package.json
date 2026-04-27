@@ -1,7 +1,7 @@
 {
   "name": "pdf-editor",
   "version": "1.0.0",
-  "description": "",
+  "description": "A modular Node.js PDF parser that extracts:\r - Raw content stream\r - Font ToUnicode CMaps\r - Translated text from TJ/Tj operators\r - Image XObjects (`/Type /XObject`, `/Subtype /Image`)",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -15,5 +15,13 @@
     "daisyui": "^5.5.19",
     "sharp": "^0.34.5",
     "tailwindcss": "^4.2.4"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rockrider603/PDF-Editor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rockrider603/PDF-Editor/issues"
+  },
+  "homepage": "https://github.com/rockrider603/PDF-Editor#readme"
 }

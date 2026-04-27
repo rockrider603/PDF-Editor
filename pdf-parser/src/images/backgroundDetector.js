@@ -80,7 +80,7 @@ function detectBackgroundObject(bytes, pdfString, pageObjStr, contentStream) {
         }
     }
 
-    return bestObjNum !== null ? { objNum: bestObjNum, matrix: bestMatrix } : null;
+    return null;  // Only classify as background if coverage ≥ 80%
 }
 
 /**
@@ -111,15 +111,19 @@ export async function extractBackgroundImage(bytes, pdfString, pageObjStr, conte
 
     if (!decoded) return null;
 
+    const d = matrix[3];
+    const f = matrix[5];
+    const pdfBottomY = d < 0 ? f + d : f;
+
     return {
         ...decoded,
         objNum,
         role: 'background',
         appearances: [{
             x:              matrix[4],
-            y:              matrix[5],
+            y:              pdfBottomY,
             renderedWidth:  Math.abs(matrix[0]),
-            renderedHeight: Math.abs(matrix[3])
+            renderedHeight: Math.abs(d)
         }]
     };
 }

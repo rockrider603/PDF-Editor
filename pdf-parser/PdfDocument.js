@@ -1,5 +1,5 @@
 import { uint8ToBinaryString } from './src/utils/bytes.js';
-import { findRootRef, extractFirstKid } from './src/core/pdfPageTreeResolver.js';
+import { findRootRef, extractFirstKid, extractKidN } from './src/core/pdfPageTreeResolver.js';
 import { getObject, extractValue, resolveLength, decompressStream } from './src/core/pdfObjectReader.js';
 import { PdfPage } from './PdfPage.js';
 
@@ -47,13 +47,27 @@ export class PdfDocument {
     // ── Page Navigation ────────────────────────────────────────────────────────
 
     /**
+     * Returns the total number of pages in the PDF.
+     * 
+     * @returns {number}
+     */
+    get pageCount() {
+        const rootRef  = findRootRef(this.#pdfString);
+        const rootObj  = getObject(this.#bytes, this.#pdfString, rootRef);
+        const pagesRef = extractValue(rootObj, '/Pages');
+        const pagesObj = getObject(this.#bytes, this.#pdfString, pagesRef);
+        
+        // Use our new extractPageCount from pdfPageTreeResolver if imported, 
+        // or just implement inline:
+        const match = pagesObj.match(/\/Count\s+(\d+)/);
+        return match ? parseInt(match[1], 10) : 1;
+    }
+
+    /**
      * Returns a `PdfPage` adapter for the given 1-indexed page number.
      *
      * Resolves the PDF structure (trailer → root → pages → page node) and
      * decompresses the page's content stream so the adapter is ready to use.
-     *
-     * Currently supports single-page or first-kid resolution. Multi-page
-     * support (walking the full Kids array) can be added here.
      *
      * @param {number} [n=1] - 1-indexed page number.
      * @returns {Promise<PdfPage>}
@@ -83,9 +97,7 @@ export class PdfDocument {
         const pagesObj = getObject(this.#bytes, this.#pdfString, pagesRef);
 
         // ── 3. Pages → Page node ─────────────────────────────────────────────
-        // extractFirstKid currently returns the first kid regardless of n.
-        // TODO: walk Kids[n-1] for multi-page support.
-        const pageRef = extractFirstKid(pagesObj, pagesRef);
+        const pageRef = extractKidN(pagesObj, pagesRef, n - 1);  // n is 1-indexed
         const pageObj = getObject(this.#bytes, this.#pdfString, pageRef);
 
         // ── 4. Page → Content Stream ─────────────────────────────────────────

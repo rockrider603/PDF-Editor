@@ -11,11 +11,9 @@ const EditingPage = () => {
   const {
     currentPDF,
     isLoading,
-    extractedContent,
-    extractedImages,
-    pageDimensions,
-    setExtractedData,
-    setPageDimensions,
+    pages,
+    setPages,
+    setPageCount,
     setIsLoading,
   } = usePDFStore();
 
@@ -41,18 +39,18 @@ const EditingPage = () => {
       try {
         // Factory — load the PDF bytes from the File object
         const doc  = await PdfDocument.fromFile(currentPDF);
+        const count = doc.pageCount;
+        const pagesArray = [];
 
-        // Adapter — get page 1 and run full extraction in one call
-        const page   = await doc.getPage(1);
-        const result = await page.extract();
+        for (let n = 1; n <= count; n++) {
+            const page   = await doc.getPage(n);
+            const result = await page.extract();
+            if (cancelled) return;
+            pagesArray.push(result);
+        }
 
-        if (cancelled) return;
-
-        setPageDimensions(result.dimensions);
-        setExtractedData(
-          { rawElements: result.textElements, classification: result.classification },
-          result.images   // { background, pageImages }
-        );
+        setPages(pagesArray);
+        setPageCount(count);
       } catch (err) {
         if (!cancelled) {
           console.error("[EditingPage] PDF parse failed:", err);
@@ -132,11 +130,7 @@ const EditingPage = () => {
             </div>
           ) : (
             <PDFViewer
-              pageWidth={pageDimensions.width}
-              pageHeight={pageDimensions.height}
-              textElements={extractedContent?.rawElements ?? []}
-              classification={extractedContent?.classification ?? null}
-              images={extractedImages ?? { background: null, pageImages: [] }}
+              pages={pages}
               selectedTool={selectedTool}
               isLoading={isLoading}
             />

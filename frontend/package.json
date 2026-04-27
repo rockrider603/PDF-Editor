@@ -23,5 +23,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview"
-  }
+  },
+  "description": "",
+  "main": "vite.config.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
 }

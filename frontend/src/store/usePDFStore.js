@@ -2,18 +2,15 @@ import { create } from "zustand";
 
 export const usePDFStore = create((set) => ({
   currentPDF: null,
-  extractedContent: null,   // { rawElements: TextElement[], classification: Classification }
-  extractedImages: null,    // { background: ImageEntry|null, pageImages: ImageEntry[] }
-  pageDimensions: { width: 612, height: 792 }, // PDF points — default US Letter
+  pages: [], // Array<{ dimensions, textElements, classification, images }>
+  pageCount: 0,
   isLoading: false,
   error: null,
 
   setCurrentPDF: (file) => set({ currentPDF: file }),
 
-  setExtractedData: (content, images) =>
-    set({ extractedContent: content, extractedImages: images }),
-
-  setPageDimensions: (dims) => set({ pageDimensions: dims }),
+  setPages: (pages) => set({ pages }),
+  setPageCount: (count) => set({ pageCount: count }),
 
   setIsLoading: (val) => set({ isLoading: val }),
 

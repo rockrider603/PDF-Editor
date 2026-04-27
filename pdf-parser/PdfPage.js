@@ -2,6 +2,7 @@ import { findFontAndCMap } from './src/text/pdfFontCMapResolver.js';
 import { processContentStream, detectParasAndHeaders } from './src/text/pdfContentStreamTextProcessor.js';
 import { extractBackgroundImage } from './src/images/backgroundDetector.js';
 import { scanPageImages } from './src/images/imageScanner.js';
+import { buildXObjectNameMap } from './src/images/pageContentParser.js';
 import { getPageDimensions } from './src/images/backgroundDetector.js';
 
 /**
@@ -116,7 +117,16 @@ export class PdfPage {
             this.#bytes, this.#pdfString, this.#pageObj, this.#contentStream
         );
 
+        // Build XObject name map for this specific page to determine which
+        // image objects belong to it — avoids cross-page contamination
+        // without relying on fragile string comparisons.
+        const nameMap     = buildXObjectNameMap(this.#bytes, this.#pdfString, this.#pageObj);
+        const pageObjNums = new Set(nameMap.values());
+
+        // Scan all images in the PDF but keep only those on this page
         let pageImgs = await scanPageImages(this.#bytes, this.#pdfString);
+        pageImgs = pageImgs.filter(img => pageObjNums.has(img.objNum));
+
         if (bg) {
             pageImgs = pageImgs.filter(img => img.objNum !== bg.objNum);
         }

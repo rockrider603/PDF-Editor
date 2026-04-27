@@ -35,11 +35,15 @@ function buildAppearancesForPage(bytes, pdfString, pageObjStr, nameMap) {
         for (const op of parsePaintOperations(streamText)) {
             const objNum = nameMap.get(op.name);
             if (objNum !== undefined) {
+                const d = op.matrix[3];
+                const f = op.matrix[5];
+                const pdfBottomY = d < 0 ? f + d : f;
+
                 appearancesMap.get(objNum).push({
                     x:              op.matrix[4],
-                    y:              op.matrix[5],
+                    y:              pdfBottomY,
                     renderedWidth:  Math.abs(op.matrix[0]),
-                    renderedHeight: Math.abs(op.matrix[3])
+                    renderedHeight: Math.abs(d)
                 });
             }
         }
