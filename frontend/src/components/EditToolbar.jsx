@@ -1,5 +1,6 @@
 import { useState } from "react";
 import React from "react";
+import { usePDFStore } from "../store/usePDFStore";
 import {
   Highlighter,
   Type,
@@ -26,8 +27,24 @@ const EditToolbar = ({
   activeTool = null,
 }) => {
   const [activeColor, setActiveColor] = useState("#FFFF00");
-  const [activeSize, setActiveSize] = useState("medium");
   const [localActiveTool, setLocalActiveTool] = useState(activeTool);
+
+  const { activeCursor, pages, updateTextFontSize } = usePDFStore();
+
+  let activeSize = 12;
+  if (activeCursor?.pageIdx !== null && activeCursor?.elIdx !== null) {
+    const el = pages[activeCursor.pageIdx]?.textElements[activeCursor.elIdx];
+    if (el && el.fontSize) {
+      activeSize = el.fontSize;
+    }
+  }
+
+  const handleSizeChange = (e) => {
+    const newSize = parseInt(e.target.value, 10);
+    if (!isNaN(newSize) && activeCursor?.pageIdx !== null && activeCursor?.elIdx !== null) {
+      updateTextFontSize(activeCursor.pageIdx, activeCursor.elIdx, newSize);
+    }
+  };
 
   const toolIcons = {
     highlight: Highlighter,
@@ -106,23 +123,17 @@ const EditToolbar = ({
         </div>
 
         {/* Size Selector */}
-        <div className="dropdown dropdown-end">
-          <button className="btn btn-sm btn-outline gap-2">
-            Size: {activeSize}
-            <ChevronDown size={16} />
-          </button>
-          <ul className="dropdown-content z-[1] menu p-2 shadow bg-base-100 rounded-box">
-            {["small", "medium", "large"].map((size) => (
-              <li key={size}>
-                <button
-                  onClick={() => setActiveSize(size)}
-                  className={activeSize === size ? "active" : ""}
-                >
-                  <span className="capitalize">{size}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-gray-700">Size:</span>
+          <input 
+            type="number" 
+            value={Math.round(activeSize)} 
+            onChange={handleSizeChange} 
+            className="input input-sm input-bordered w-20 px-2"
+            min="4"
+            max="144"
+            disabled={activeCursor?.pageIdx === null}
+          />
         </div>
 
         {/* Action Buttons */}

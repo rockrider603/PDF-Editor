@@ -1,5 +1,6 @@
-import React from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Loader2 } from "lucide-react";
+import { usePDFStore } from "../store/usePDFStore";
 
 // Fixed display width of the canvas in CSS pixels.
 // The canvas height is computed from the PDF's aspect ratio.
@@ -21,7 +22,8 @@ function toCanvasY(pdfY, elHeight, pageHeight, scale) {
 
 // ─── PageCanvas Sub-Component ────────────────────────────────────────────────
 
-const PageCanvas = ({ page, pageNumber, selectedTool }) => {
+const PageCanvas = ({ page, pageNumber, selectedTool, activeCursor, setActiveCursor }) => {
+  const containerRef = useRef(null);
   const { dimensions, textElements = [], classification = null, images = { background: null, pageImages: [] } } = page;
 
   const pageWidth = dimensions?.width ?? 612;
@@ -32,11 +34,75 @@ const PageCanvas = ({ page, pageNumber, selectedTool }) => {
 
   const headerTexts = new Set(classification?.headers ?? []);
 
+  const handleTextClick = (e, pageIdx, elIdx) => {
+    e.stopPropagation();
+
+    let offset = 0;
+    let textNode = null;
+
+    if (document.caretRangeFromPoint) {
+      const range = document.caretRangeFromPoint(e.clientX, e.clientY);
+      if (range && range.startContainer.nodeType === Node.TEXT_NODE) {
+        offset = range.startOffset;
+        textNode = range.startContainer;
+      }
+    } else if (document.caretPositionFromPoint) {
+      const pos = document.caretPositionFromPoint(e.clientX, e.clientY);
+      if (pos && pos.offsetNode.nodeType === Node.TEXT_NODE) {
+        offset = pos.offset;
+        textNode = pos.offsetNode;
+      }
+    }
+
+    let caretX = 0;
+    if (textNode && offset > 0) {
+      const range = document.createRange();
+      range.setStart(textNode, 0);
+      range.setEnd(textNode, offset);
+      caretX = range.getBoundingClientRect().width;
+    }
+
+    setActiveCursor({
+      pageIdx,
+      elIdx,
+      charOffset: offset,
+      caretX,
+    });
+  };
+
+  useEffect(() => {
+    if (activeCursor?.pageIdx === (pageNumber - 1) && activeCursor?.elIdx !== null) {
+      const activeDiv = containerRef.current?.querySelector(`#text-el-${pageNumber - 1}-${activeCursor.elIdx}`);
+      if (activeDiv && activeDiv.firstChild?.nodeType === Node.TEXT_NODE) {
+        const textNode = activeDiv.firstChild;
+        const offset = Math.min(activeCursor.charOffset, textNode.length);
+        if (offset > 0) {
+          const range = document.createRange();
+          try {
+            range.setStart(textNode, 0);
+            range.setEnd(textNode, offset);
+            const newCaretX = range.getBoundingClientRect().width;
+            if (Math.abs(newCaretX - activeCursor.caretX) > 0.5) {
+              setActiveCursor(prev => ({ ...prev, caretX: newCaretX }));
+            }
+          } catch (e) {
+            console.warn("Failed to measure caret:", e);
+          }
+        } else {
+          if (activeCursor.caretX !== 0) {
+            setActiveCursor(prev => ({ ...prev, caretX: 0 }));
+          }
+        }
+      }
+    }
+  }, [textElements, activeCursor?.charOffset, activeCursor?.pageIdx, activeCursor?.elIdx, pageNumber, setActiveCursor]);
+
   return (
     <div className="flex flex-col items-center">
       <div className="mb-2 text-sm text-gray-500 font-medium">Page {pageNumber}</div>
       <div className="overflow-auto rounded-lg shadow-xl border border-gray-200" style={{ maxWidth: '100%' }}>
         <div
+          ref={containerRef}
           id={`pdf-canvas-page-${pageNumber}`}
           style={{
             position: 'relative',
@@ -99,10 +165,13 @@ const PageCanvas = ({ page, pageNumber, selectedTool }) => {
             const ascent = (el.fontSize ?? 12) * 0.8;
             const cssY = toCanvasY(el.y, ascent, pageHeight, scale);
             const isHeader = headerTexts.has(el.text);
+            const isActive = activeCursor?.pageIdx === (pageNumber - 1) && activeCursor?.elIdx === idx;
 
             return (
               <div
+                id={`text-el-${pageNumber - 1}-${idx}`}
                 key={`el-${idx}`}
+                onClick={(e) => handleTextClick(e, pageNumber - 1, idx)}
                 style={{
                   position: 'absolute',
                   left: cssX,
@@ -114,11 +183,27 @@ const PageCanvas = ({ page, pageNumber, selectedTool }) => {
                   color: isHeader ? '#111827' : '#1f2937',
                   zIndex: 2,
                   userSelect: 'none',
-                  cursor: selectedTool ? 'pointer' : 'default',
+                  cursor: 'text',
                   lineHeight: 1,
                 }}
               >
                 {el.text}
+                
+                {/* Render Cursor */}
+                {isActive && (
+                  <div 
+                    className="bg-blue-600"
+                    style={{
+                      position: 'absolute',
+                      left: activeCursor.caretX,
+                      top: '-10%',       
+                      width: '2px',
+                      height: '120%',    
+                      pointerEvents: 'none', 
+                      animation: 'blink 1s step-end infinite' 
+                    }} 
+                  />
+                )}
               </div>
             );
           })}
@@ -135,6 +220,58 @@ const PDFViewer = ({
   isLoading = false,
   selectedTool = null,
 }) => {
+  const activeCursor = usePDFStore((state) => state.activeCursor);
+  const setActiveCursor = usePDFStore((state) => state.setActiveCursor);
+
+  const updateTextElement = usePDFStore((state) => state.updateTextElement);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (activeCursor.pageIdx === null || activeCursor.elIdx === null) return;
+
+      const page = pages[activeCursor.pageIdx];
+      if (!page) return;
+
+      const el = page.textElements[activeCursor.elIdx];
+      if (!el) return;
+
+      let newText = el.text;
+      let newOffset = activeCursor.charOffset;
+      let prevent = false;
+
+      if (e.key === 'Backspace') {
+        if (newOffset > 0) {
+          newText = newText.slice(0, newOffset - 1) + newText.slice(newOffset);
+          newOffset -= 1;
+          prevent = true;
+        }
+      } else if (e.key === 'ArrowLeft') {
+        if (newOffset > 0) {
+          newOffset -= 1;
+          prevent = true;
+        }
+      } else if (e.key === 'ArrowRight') {
+        if (newOffset < newText.length) {
+          newOffset += 1;
+          prevent = true;
+        }
+      } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+        newText = newText.slice(0, newOffset) + e.key + newText.slice(newOffset);
+        newOffset += 1;
+        prevent = true;
+      }
+
+      if (prevent) {
+        e.preventDefault();
+        updateTextElement(activeCursor.pageIdx, activeCursor.elIdx, newText);
+        setActiveCursor(prev => ({ ...prev, charOffset: newOffset }));
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeCursor, pages, updateTextElement]);
+
   // ── Loading State ──────────────────────────────────────────────────────────
   if (isLoading) {
     return (
@@ -180,6 +317,8 @@ const PDFViewer = ({
           page={page}
           pageNumber={pageIdx + 1}
           selectedTool={selectedTool}
+          activeCursor={activeCursor}
+          setActiveCursor={setActiveCursor}
         />
       ))}
     </div>

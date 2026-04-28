@@ -510,3 +510,180 @@ After running `npm run dev` in `frontend/`:
 1. Upload `Photo file.pdf` — image should appear where it is in the PDF; text should appear below/around it without overlap.
 2. Upload `2 images file.pdf` — scroll down; second image should appear where expected.
 3. Upload a multi-page PDF — scrolling should reveal all pages stacked one below the other with page number labels.
+
+---
+
+## Phase 2: Accurate Text Cursor Placement
+
+### Goal
+Allow users to click on text or headers in the PDF viewer to place an editing cursor precisely at the clicked character, as the first step towards text editing. Do not implement image selection yet.
+
+### Challenges
+- Text width calculation must perfectly match the browser's font rendering, kerning, and sub-pixel anti-aliasing. A small calculation mistake will place the cursor between the wrong characters.
+
+### Solution
+We will use the browser's native `Range` and `caretRangeFromPoint` (or `caretPositionFromPoint` for Firefox compatibility) APIs. These APIs use the actual browser layout engine to determine the exact character offset from a screen coordinate and the exact pixel width of text substrings. This avoids fragile manual canvas measurements.
+
+### Proposed Changes
+
+#### 1. Define Active Cursor State
+In `PDFViewer.jsx` (or passed down from `EditingPage.jsx`), add state to track the active cursor position:
+```javascript
+const [activeCursor, setActiveCursor] = useState({
+  pageIdx: null,
+  elIdx: null,
+  charOffset: null,
+  caretX: 0,
+});
+```
+
+#### 2. Click Handler for Exact Coordinate Calculation
+Add an `onClick` handler to the text `div`s. When clicked, it will:
+1. Use `document.caretRangeFromPoint(e.clientX, e.clientY)` to get the exact character offset at the mouse click position.
+2. Create a `document.createRange()` from the start of the text node up to the `offset`.
+3. Measure the range's width using `range.getBoundingClientRect().width`. This gives the perfectly accurate `caretX` position relative to the start of the text.
+4. Update `activeCursor` state.
+
+```javascript
+const handleTextClick = (e, pageIdx, elIdx) => {
+  e.stopPropagation();
+
+  let offset = 0;
+  let textNode = null;
+
+  // 1. Get exact character offset using browser native APIs
+  if (document.caretRangeFromPoint) {
+    const range = document.caretRangeFromPoint(e.clientX, e.clientY);
+    if (range && range.startContainer.nodeType === Node.TEXT_NODE) {
+      offset = range.startOffset;
+      textNode = range.startContainer;
+    }
+  } else if (document.caretPositionFromPoint) { // Firefox support
+    const pos = document.caretPositionFromPoint(e.clientX, e.clientY);
+    if (pos && pos.offsetNode.nodeType === Node.TEXT_NODE) {
+      offset = pos.offset;
+      textNode = pos.offsetNode;
+    }
+  }
+
+  // 2. Measure the exact pixel width up to the offset using a Range
+  let caretX = 0;
+  if (textNode && offset > 0) {
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, offset);
+    caretX = range.getBoundingClientRect().width;
+  }
+
+  // 3. Update state
+  setActiveCursor({
+    pageIdx,
+    elIdx,
+    charOffset: offset,
+    caretX,
+  });
+};
+```
+
+#### 3. Render the Blinking Cursor
+In the text elements `map` loop in `PageCanvas`, check if the current element matches the `activeCursor` state. If so, render a blinking cursor line exactly at `caretX`.
+
+```jsx
+// Inside the Layer 2: Text map loop
+const isActive = activeCursor?.pageIdx === pageIdx && activeCursor?.elIdx === idx;
+
+<div
+  key={`el-${idx}`}
+  onClick={(e) => handleTextClick(e, pageIdx - 1, idx)}
+  style={{
+    position: 'absolute',
+    left: cssX,
+    top: cssY,
+    // ... existing font styles ...
+    cursor: 'text', // Change cursor to indicate text is clickable
+  }}
+>
+  {el.text}
+  
+  {/* Render Cursor */}
+  {isActive && (
+    <div 
+      className="bg-blue-600"
+      style={{
+        position: 'absolute',
+        left: activeCursor.caretX,
+        top: '-10%',       // Slight padding to match visual text height
+        width: '2px',
+        height: '120%',    // Cursor slightly taller than text
+        pointerEvents: 'none', // Prevent cursor from blocking clicks
+        animation: 'blink 1s step-end infinite' // Custom blink animation
+      }} 
+    />
+  )}
+</div>
+```
+
+**Note:** We will add CSS for the `@keyframes blink` animation in `index.css` to make the cursor blink like a native text editor. We are specifically targeting `textElements` in `Layer 2`. We will not attach this `onClick` handler to `images` in `Layer 1`, ensuring image clicks are ignored for now as requested.
+
+---
+
+## Phase 3: Text Editing, Resizing, and Font Embedding
+
+### Goal
+Enable active text editing in the PDF viewer. Users must be able to type new words, use backspace to delete characters, and change the font size of the selected text. Crucially, when new characters are typed that do not exist in the PDF's original embedded font subset, these missing characters must be embedded dynamically using our local TTF files (e.g., Roboto).
+
+### Challenges
+- **Font Subsetting:** Most PDFs only embed a subset of a font (only the exact characters used in the document). If a user types a new character (e.g., "z") that wasn't in the original text, the PDF won't know how to render it.
+- **Encoding Map:** We need to verify if a typed character exists in the original font's encoding dictionary.
+- **TTF Parsing and Embedding:** To inject a missing character, the backend must read the raw TTF file, extract the glyph data, and update the PDF's font structures (`/FontFile2`, `/Widths`, `/FirstChar`, `/LastChar`, etc.).
+- **Live Updating:** The frontend must feel like a native text editor (handling backspace, caret movement) and update the React state before the final PDF generation.
+
+### Solution & Proposed Implementation
+
+#### 1. Frontend Text Editing (Typing & Backspace)
+We will add keyboard event listeners to handle live text manipulation when a cursor is active.
+
+**Updates to `PDFViewer.jsx` (or a new `TextEditor.jsx` component):**
+- Add a hidden `textarea` or use a global `keydown` event listener that intercepts keystrokes when `activeCursor` is set.
+- **Typing:** When a character key is pressed, insert the character into the text string at `activeCursor.charOffset`. Increment the offset.
+- **Backspace:** When backspace is pressed, remove the character at `activeCursor.charOffset - 1`. Decrement the offset.
+- Update `usePDFStore` with the modified text so the UI re-renders immediately.
+
+```javascript
+const handleKeyDown = (e) => {
+  if (!activeCursor) return;
+  // Implementation for text insertion and deletion
+  // Update text element in the store and adjust caretX
+};
+```
+
+#### 2. Text Resizing UI
+- Add a floating toolbar or a top toolbar that becomes active when a text element is selected.
+- Include a "Font Size" input/dropdown.
+- When changed, update the `fontSize` property of the `textElement` in `usePDFStore`.
+- This will instantly re-render the text larger/smaller on the canvas (handled by our existing `cssY` and `scale` logic).
+- When exporting the PDF, this new size will update the scaling parameters in the text matrix (`Tm`).
+
+#### 3. Backend: Font Encoding Check & TTF Embedding
+When the user finishes editing (or when we generate the final PDF), the backend must ensure all characters can be rendered.
+
+**A. Checking Character Presence:**
+- For the edited text element, examine the original font dictionary (e.g., `/Type /Font`).
+- Read the `/Widths` array and `/Encoding` to see if the newly typed characters exist.
+
+**B. TTF Fallback (Using Local Roboto Fonts):**
+- If characters are missing, we load the provided TTF files from `Text fonts/Roboto/`.
+- We will implement or integrate a TTF parser to extract the missing glyphs.
+- Create a new font dictionary (or extend the existing one if possible, though creating a new subset `/TrueType` font is safer) that includes the new characters.
+- Update the `/FontFile2` stream in the PDF to contain the subsetted TTF data.
+- Update the `/Widths` array so the PDF viewer knows how wide the new characters are.
+
+**C. Updating Page Content Streams:**
+- If we had to switch to the new Roboto font for the new characters, update the `Tf` (font selection) operator in the page's content stream.
+- Re-encode the text string using the new font's character map (e.g., mapping "A" to the correct CID or byte code).
+
+### Summary of Next Steps
+1. **Frontend:** Implement keyboard event handlers for typing and backspacing text at the cursor.
+2. **Frontend:** Build the "Size" adjustment UI and link it to the store.
+3. **Backend:** Write a utility to load the `Roboto-*.ttf` files and extract glyph/width data.
+4. **Backend:** Implement the font dictionary updater that embeds missing characters into the PDF structure before final save.
