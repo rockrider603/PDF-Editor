@@ -5,6 +5,7 @@ import EditToolbar from "../components/EditToolbar";
 import PDFViewer from "../components/PDFViewer";
 import { usePDFStore } from "../store/usePDFStore";
 import { PdfDocument } from "pdf-parser";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 const EditingPage = () => {
   const navigate = useNavigate();
@@ -66,16 +67,105 @@ const EditingPage = () => {
   }, [currentPDF]);
 
   // ── Download ────────────────────────────────────────────────────────────────
-  const handleDownload = () => {
-    if (!currentPDF) return;
-    const url = URL.createObjectURL(currentPDF);
-    const a   = document.createElement("a");
-    a.href     = url;
-    a.download = `edited_${currentPDF.name}`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+  const handleDownload = async () => {
+    if (!pages || pages.length === 0) {
+      if (currentPDF) {
+        // Fallback to original
+        const url = URL.createObjectURL(currentPDF);
+        const a   = document.createElement("a");
+        a.href     = url;
+        a.download = `original_${currentPDF.name}`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const pdfDoc = await PDFDocument.create();
+      const helveticaFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+      for (const pageData of pages) {
+        const { dimensions, textElements, images } = pageData;
+        const page = pdfDoc.addPage([dimensions.width, dimensions.height]);
+
+        // Draw background
+        if (images?.background?.dataUrl) {
+           const bgData = images.background.dataUrl;
+           let embeddedImage;
+           if (bgData.includes("image/png")) {
+             embeddedImage = await pdfDoc.embedPng(bgData);
+           } else if (bgData.includes("image/jpeg") || bgData.includes("image/jpg")) {
+             embeddedImage = await pdfDoc.embedJpg(bgData);
+           }
+           if (embeddedImage) {
+             page.drawImage(embeddedImage, {
+               x: 0,
+               y: 0,
+               width: dimensions.width,
+               height: dimensions.height,
+             });
+           }
+        }
+
+        // Draw page images
+        if (images?.pageImages) {
+          for (const img of images.pageImages) {
+             const imgData = img.dataUrl;
+             if (!imgData) continue;
+             let embeddedImage;
+             if (imgData.includes("image/png")) {
+               embeddedImage = await pdfDoc.embedPng(imgData);
+             } else if (imgData.includes("image/jpeg") || imgData.includes("image/jpg")) {
+               embeddedImage = await pdfDoc.embedJpg(imgData);
+             }
+             if (embeddedImage) {
+               const ap = img.appearances?.[0];
+               if (ap) {
+                 page.drawImage(embeddedImage, {
+                   x: ap.x || 0,
+                   y: ap.y || 0,
+                   width: ap.renderedWidth || 100,
+                   height: ap.renderedHeight || 100,
+                 });
+               }
+             }
+          }
+        }
+
+        // Draw text
+        if (textElements) {
+          for (const el of textElements) {
+            page.drawText(el.text, {
+              x: el.x || 0,
+              y: el.y || 0,
+              size: el.fontSize || 12,
+              font: helveticaFont,
+              color: rgb(0, 0, 0),
+            });
+          }
+        }
+      }
+
+      const pdfBytes = await pdfDoc.save();
+      const blob = new Blob([pdfBytes], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = currentPDF ? `edited_${currentPDF.name}` : "edited_document.pdf";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Failed to generate PDF:", err);
+      alert("Failed to generate PDF. Check console for details.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // ── Save ────────────────────────────────────────────────────────────────────
