@@ -3,9 +3,9 @@ import React from "react";
 import { usePDFStore } from "../store/usePDFStore";
 import {
   Highlighter,
-  Type,
+  Bold,
   StickyNote,
-  Crop,
+  Italic,
   Underline,
   Download,
   Save,
@@ -29,13 +29,17 @@ const EditToolbar = ({
   const [activeColor, setActiveColor] = useState("#FFFF00");
   const [localActiveTool, setLocalActiveTool] = useState(activeTool);
 
-  const { activeCursor, pages, updateTextFontSize } = usePDFStore();
+  const { activeCursor, pages, updateTextFontSize, updateTextColor, updateTextFormat } = usePDFStore();
 
   let activeSize = 12;
+  let activeFormat = { isBold: false, isItalic: false };
+
   if (activeCursor?.pageIdx !== null && activeCursor?.elIdx !== null) {
     const el = pages[activeCursor.pageIdx]?.textElements[activeCursor.elIdx];
-    if (el && el.fontSize) {
-      activeSize = el.fontSize;
+    if (el) {
+      if (el.fontSize) activeSize = el.fontSize;
+      if (el.isBold) activeFormat.isBold = true;
+      if (el.isItalic) activeFormat.isItalic = true;
     }
   }
 
@@ -46,20 +50,27 @@ const EditToolbar = ({
     }
   };
 
+  const handleColorSelect = (colorValue) => {
+    setActiveColor(colorValue);
+    if (activeCursor?.pageIdx !== null && activeCursor?.elIdx !== null) {
+      updateTextColor(activeCursor.pageIdx, activeCursor.elIdx, colorValue);
+    }
+  };
+
   const toolIcons = {
     highlight: Highlighter,
-    strikethrough: Type,
+    bold: Bold,
     underline: Underline,
     notes: StickyNote,
-    crop: Crop,
+    italic: Italic,
   };
 
   const colors = [
-    { name: "yellow", value: "#FFFF00", bg: "bg-yellow-300" },
-    { name: "green", value: "#00FF00", bg: "bg-green-300" },
-    { name: "pink", value: "#FF00FF", bg: "bg-pink-300" },
-    { name: "red", value: "#FF0000", bg: "bg-red-300" },
-    { name: "blue", value: "#0000FF", bg: "bg-blue-300" },
+    { name: "black", value: "#000000", bg: "bg-black" },
+    { name: "white", value: "#FFFFFF", bg: "bg-white" },
+    { name: "red", value: "#FF0000", bg: "bg-red-500" },
+    { name: "green", value: "#00FF00", bg: "bg-green-500" },
+    { name: "blue", value: "#0000FF", bg: "bg-blue-500" },
   ];
 
   return (
@@ -69,13 +80,24 @@ const EditToolbar = ({
         <div className="flex flex-wrap gap-2">
           {EDITING_TOOLS.map((tool) => {
             const Icon = toolIcons[tool.id];
-            const isActive = localActiveTool === tool.id;
+            const isFormatTool = tool.id === 'bold' || tool.id === 'italic';
+            const isFormatActive = tool.id === 'bold' ? activeFormat.isBold : activeFormat.isItalic;
+            const isActive = isFormatTool ? isFormatActive : (localActiveTool === tool.id);
+
             return (
               <button
                 key={tool.id}
                 onClick={() => {
-                  setLocalActiveTool(isActive ? null : tool.id);
-                  onTool(isActive ? null : tool.id);
+                  if (isFormatTool) {
+                    if (activeCursor?.pageIdx !== null && activeCursor?.elIdx !== null) {
+                      const prop = tool.id === 'bold' ? 'isBold' : 'isItalic';
+                      const el = pages[activeCursor.pageIdx]?.textElements[activeCursor.elIdx] || {};
+                      updateTextFormat(activeCursor.pageIdx, activeCursor.elIdx, { [prop]: !el[prop] });
+                    }
+                  } else {
+                    setLocalActiveTool(isActive ? null : tool.id);
+                    onTool(isActive ? null : tool.id);
+                  }
                 }}
                 className={`btn btn-sm gap-2 transition-all ${
                   isActive
@@ -83,7 +105,7 @@ const EditToolbar = ({
                     : "btn-outline hover:btn-primary"
                 }`}
                 title={tool.label}
-                disabled={isLoading}
+                disabled={isLoading || (isFormatTool && activeCursor?.pageIdx === null)}
               >
                 {Icon && <Icon size={16} />}
                 <span className="hidden sm:inline">{tool.label}</span>
@@ -106,7 +128,7 @@ const EditToolbar = ({
             {colors.map((color) => (
               <li key={color.name}>
                 <button
-                  onClick={() => setActiveColor(color.value)}
+                  onClick={() => handleColorSelect(color.value)}
                   className={`flex gap-2 items-center ${
                     activeColor === color.value ? "active" : ""
                   }`}

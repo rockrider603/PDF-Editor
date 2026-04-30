@@ -687,3 +687,54 @@ When the user finishes editing (or when we generate the final PDF), the backend 
 2. **Frontend:** Build the "Size" adjustment UI and link it to the store.
 3. **Backend:** Write a utility to load the `Roboto-*.ttf` files and extract glyph/width data.
 4. **Backend:** Implement the font dictionary updater that embeds missing characters into the PDF structure before final save.
+
+---
+
+## Phase 4: Advanced Text Formatting and Coloring
+
+### Goal
+Implement rich text formatting options including bold, italics, font sizing, and text coloring. Repurpose existing UI buttons to support these new features.
+
+### Proposed Changes
+
+#### 1. Repurposing UI Buttons
+- Change the existing **StrikeThrough** button into a **Bold** button.
+- Change the existing **Crop** button into an **Italics** button.
+- When clicked while text is selected, these buttons should toggle the respective styles.
+- *Note on Bold/Italics implementation:* This involves changing the active font resource or applying text rendering modes (like stroke for pseudo-bold) or CTM skewing (for pseudo-italics) if the specific bold/italic TTF variants are not available, or loading the Bold/Italic variants from the `Text fonts/Roboto/` folder.
+
+#### 2. Font Sizing
+- Add options to increase and reduce the size of the selected text/headers.
+- To guarantee accurate sizing metrics, exclusively use the provided `.ttf` files in the `Text fonts/Roboto` folder for measuring and rendering text dimensions.
+- Update the `fontSize` state in `usePDFStore` and adjust the text matrices (`Tm` operator) upon export.
+
+#### 3. Text Coloring
+- Use the existing color button to change text color.
+- Support basic colors for now: **blue, red, green, black, and white**.
+- *Backend Export:* To apply the color change in the exported PDF, locate the text object within the PDF's content stream and inject or modify the `rg` / `RG` operators (RGB color space) with the corresponding r, g, and b values (e.g., `0 0 1 rg` for blue).
+
+---
+
+## Phase 5: Text Reflow, Indentation, and Layout Adjustment
+
+### Goal
+Implement dynamic text reflow that prevents text from overflowing its permitted space (bounding box) during editing. Formatting adjustments must dynamically push down (or pull up) subsequent elements (text, headers, images) and handle multi-line cursor wrapping.
+
+### Proposed Changes
+
+#### 1. Bounding Box Detection and Line Wrapping
+- Detect the **left end** and **right end** of the editable text section within the `PDFViewer` area. This establishes the permitted bounding box.
+- When typing new text, if the text width causes it to exceed the right boundary:
+  - Automatically wrap the overflowing word(s) to the next line.
+  - Apply this recursively: the last words of the newly created line may wrap to the subsequent line, cascading through the paragraph.
+  - Adjust the PDF coordinates (`Tm` Y-value) of the wrapped text elements.
+
+#### 2. Layout Shifting (Reflow)
+- Whenever text wraps to a new line (increasing the paragraph height), all elements *below* the edited text (including other text blocks, headers, and images) must be shifted downwards by the line height.
+- Conversely, when text is deleted (backspaced) causing lines to merge and the paragraph to shrink, all subsequent elements must be pulled upwards accordingly.
+- Update the `y` coordinates for both `textElements` and `images` in `usePDFStore` dynamically.
+
+#### 3. Cursor Navigation Tracking
+- Update the text cursor logic: when the cursor reaches the right end of the text section, it should automatically jump to the beginning of the next line.
+- When backspacing or moving left from the start of a line, the cursor should wrap back to the end of the previous line.
+

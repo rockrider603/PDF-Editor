@@ -46,6 +46,15 @@ const EditingPage = () => {
         for (let n = 1; n <= count; n++) {
             const page   = await doc.getPage(n);
             const result = await page.extract();
+            
+            // --- ADDED: Print objects info to the terminal (browser console) ---
+            console.log(`\n=== PAGE ${n} OBJECTS INFO ===`);
+            console.log("1. Dimensions:", result.dimensions);
+            console.log(`2. Text Elements (${result.textElements?.length || 0} found):`, result.textElements);
+            console.log("3. Text Classification (Headers/Paragraphs):", result.classification);
+            console.log(`4. Images (Background + ${result.images?.pageImages?.length || 0} page images):`, result.images);
+            console.log("================================\n");
+
             if (cancelled) return;
             pagesArray.push(result);
         }
@@ -65,6 +74,16 @@ const EditingPage = () => {
     // Cleanup — ignore stale results if the component unmounts mid-parse
     return () => { cancelled = true; };
   }, [currentPDF]);
+
+  // ── Monitor live changes to the objects ─────────────────────────────────────
+  useEffect(() => {
+    if (pages.length > 0) {
+      console.log("--- LIVE OBJECTS UPDATE ---");
+      pages.forEach((page, idx) => {
+        console.log(`Page ${idx + 1} Text Elements:`, page.textElements);
+      });
+    }
+  }, [pages]);
 
   // ── Download ────────────────────────────────────────────────────────────────
   const handleDownload = async () => {

@@ -41,10 +41,10 @@ export const PDF_UPLOAD_LIMITS = {
 
 export const EDITING_TOOLS = [
   { id: "highlight", label: "Highlight", icon: "🎨" },
-  { id: "strikethrough", label: "Strikethrough", icon: "📝" },
+  { id: "bold", label: "Bold", icon: "🅱️" },
   { id: "underline", label: "Underline", icon: "✏️" },
   { id: "notes", label: "Add Notes", icon: "📌" },
-  { id: "crop", label: "Crop", icon: "✂️" },
+  { id: "italic", label: "Italic", icon: "ℹ️" },
 ];
 
 export const NOTIFICATION_MESSAGES = {
