@@ -50,9 +50,16 @@ const EditingPage = () => {
             // --- ADDED: Print objects info to the terminal (browser console) ---
             console.log(`\n=== PAGE ${n} OBJECTS INFO ===`);
             console.log("1. Dimensions:", result.dimensions);
-            console.log(`2. Text Elements (${result.textElements?.length || 0} found):`, result.textElements);
-            console.log("3. Text Classification (Headers/Paragraphs):", result.classification);
-            console.log(`4. Images (Background + ${result.images?.pageImages?.length || 0} page images):`, result.images);
+            console.log(`2. Text Lines (${result.textElements?.length || 0} found):`, result.textElements);
+            console.log("3. Classification:");
+            console.log(`   Headers: ${result.classification?.headerCount ?? 0}`, result.classification?.headers);
+            console.log(`   Text lines: ${result.classification?.textCount ?? 0}`);
+            console.log(`   Paragraphs: ${result.classification?.paragraphCount ?? 0}`);
+            result.classification?.paragraphs?.forEach((para, id) => {
+                console.log(`   Para ${id} (${para.lines.length} lines, x=${para.x}, y=${para.y}):`);
+                para.lines.forEach(l => console.log(`     [${l.y.toFixed(1)}] ${l.text.substring(0, 60)}`));
+            });
+            console.log(`4. Images:`, result.images);
             console.log("================================\n");
 
             if (cancelled) return;

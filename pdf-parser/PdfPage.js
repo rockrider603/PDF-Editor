@@ -85,12 +85,15 @@ export class PdfPage {
      * @param {Array<{ text: string, x: number, y: number, width: number }>} textElements
      * @returns {{
      *   headers:        string[],
-     *   paragraphs:     string[],
      *   headerCount:    number,
+     *   text:           string[],
+     *   textCount:      number,
+     *   paragraphs:     Map<number, { id: number, lines: Array<any>, x: number, y: number, width: number, fontSize: number }>,
      *   paragraphCount: number,
      *   detailed: {
      *     headers:    Array<{ text, xPosition, elementCenter, alignment }>,
-     *     paragraphs: Array<{ text, xPosition, elementCenter, alignment }>
+     *     text:       Array<{ text, x, y, width, fontSize }>,
+     *     paragraphs: Map<number, { id, lines, x, y, width, fontSize }>
      *   }
      * }}
      */

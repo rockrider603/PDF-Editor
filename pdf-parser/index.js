@@ -47,6 +47,7 @@ export { parseCMap, buildCharMap,
 export { findFontAndCMap }                 from './src/text/pdfFontCMapResolver.js';
 export { processContentStream,
          detectParasAndHeaders,
+         groupIntoParagraphs,
          decodePdfLiteralString }          from './src/text/pdfContentStreamTextProcessor.js';
 
 // ── Images ────────────────────────────────────────────────────────────────────

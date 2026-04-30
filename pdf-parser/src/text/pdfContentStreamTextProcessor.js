@@ -124,37 +124,113 @@ export function processContentStream(decompressed, fonts) {
 // ── Classification ────────────────────────────────────────────────────────────
 
 /**
+ * Groups body-text lines into logical paragraphs using the line-fill heuristic.
+ *
+ * A paragraph boundary is detected when the previous line's width is less than
+ * SHORT_LINE_RATIO of the block's maximum observed line width — indicating the
+ * previous line was the last (short) line of a paragraph.
+ *
+ * A large Y gap between consecutive lines also triggers a paragraph break.
+ *
+ * @param {Array<{ text: string, x: number, y: number, width: number, fontSize: number }>} bodyLines 
+ *   - Body-text lines sorted by y DESC (reading order).
+ * @returns {Map<number, { id: number, lines: Array<any>, x: number, y: number, width: number, fontSize: number }>}  
+ *   1-indexed paragraph map.
+ */
+export function groupIntoParagraphs(bodyLines) {
+    const paragraphs = new Map();
+    if (bodyLines.length === 0) return paragraphs;
+
+    const SHORT_LINE_RATIO    = 0.85;   // line is "short" if width < maxBlockWidth * this
+    const Y_GAP_MULTIPLIER    = 2.5;    // y gap > avgLineHeight * this → paragraph break
+    const DEFAULT_LINE_HEIGHT = 14;     // fallback pts when fontSize is unavailable
+
+    // Sort descending by y (highest y = topmost line in PDF space = first to read)
+    const sorted = [...bodyLines].sort((a, b) => b.y - a.y);
+
+    // Estimate average line height from font sizes
+    const avgFontSize = sorted.reduce((s, l) => s + (l.fontSize || DEFAULT_LINE_HEIGHT), 0) / sorted.length;
+    const avgLineHeight = avgFontSize * 1.2;
+
+    let paraId        = 1;
+    let currentLines  = [sorted[0]];
+    let maxWidth      = sorted[0].width || 0;
+
+    for (let i = 1; i < sorted.length; i++) {
+        const prev = sorted[i - 1];
+        const curr = sorted[i];
+
+        const yGap           = prev.y - curr.y;                         // should be positive
+        const prevLineShort  = (prev.width || 0) < maxWidth * SHORT_LINE_RATIO;
+        const largeYGap      = yGap > avgLineHeight * Y_GAP_MULTIPLIER;
+
+        if (prevLineShort || largeYGap) {
+            // Finalize current paragraph
+            paragraphs.set(paraId, {
+                id:       paraId,
+                lines:    currentLines,
+                x:        currentLines[0].x,
+                y:        currentLines[0].y,
+                width:    maxWidth,
+                fontSize: currentLines[0].fontSize ?? DEFAULT_LINE_HEIGHT
+            });
+            paraId++;
+            currentLines = [curr];
+            maxWidth     = curr.width || 0;
+        } else {
+            currentLines.push(curr);
+            maxWidth = Math.max(maxWidth, curr.width || 0);
+        }
+    }
+
+    // Finalize last paragraph
+    paragraphs.set(paraId, {
+        id:       paraId,
+        lines:    currentLines,
+        x:        currentLines[0].x,
+        y:        currentLines[0].y,
+        width:    maxWidth,
+        fontSize: currentLines[0].fontSize ?? DEFAULT_LINE_HEIGHT
+    });
+
+    return paragraphs;
+}
+
+/**
  * Classifies an array of positioned text elements as headers or paragraphs.
  *
  * Classification rules (using standard letter-page defaults):
  *   - HEADER   : element center is within `CENTER_TOLERANCE` pts of the page centre.
- *   - PARAGRAPH: element x < `LEFT_MARGIN_THRESHOLD` (left-aligned text).
+ *   - PARAGRAPH: built using the `groupIntoParagraphs` line-fill heuristic.
  *
- * @param {Array<{ text: string, x: number, y: number, width: number }>} textElements
+ * @param {Array<{ text: string, x: number, y: number, width: number, fontSize: number }>} textElements
  * @param {number} [pageWidth=612] - Page width in PDF points (US Letter default).
  * @returns {{
  *   headers:        string[],
- *   paragraphs:     string[],
  *   headerCount:    number,
+ *   text:           string[],
+ *   textCount:      number,
+ *   paragraphs:     Map<number, { id: number, lines: Array<any>, x: number, y: number, width: number, fontSize: number }>,
  *   paragraphCount: number,
  *   detailed: {
  *     headers:    Array<{ text, xPosition, elementCenter, alignment }>,
- *     paragraphs: Array<{ text, xPosition, elementCenter, alignment }>
+ *     text:       Array<{ text, x, y, width, fontSize }>,
+ *     paragraphs: Map<number, { id, lines, x, y, width, fontSize }>
  *   }
  * }}
  */
 export function detectParasAndHeaders(textElements, pageWidth = 612) {
     if (!Array.isArray(textElements)) {
-        return { headers: [], paragraphs: [], headerCount: 0, paragraphCount: 0,
-                 detailed: { headers: [], paragraphs: [] } };
+        return { headers: [], headerCount: 0, text: [], textCount: 0,
+                 paragraphs: new Map(), paragraphCount: 0,
+                 detailed: { headers: [], text: [], paragraphs: new Map() } };
     }
 
     const PAGE_CENTER            = pageWidth / 2;
     const CENTER_TOLERANCE       = pageWidth * 0.065;   // ~40pt on 612pt page
-    const LEFT_MARGIN_THRESHOLD  = pageWidth * 0.163;   // ~100pt on 612pt page
 
-    const headers    = [];
-    const paragraphs = [];
+    const headers   = [];
+    const bodyLines = [];
 
     for (const element of textElements) {
         if (!element?.text || element.text.trim() === '') continue;
@@ -174,24 +250,21 @@ export function detectParasAndHeaders(textElements, pageWidth = 612) {
                 elementCenter: elementCenter,
                 alignment:     'center'
             });
-        } else if (xPosition < LEFT_MARGIN_THRESHOLD) {
-            paragraphs.push({
-                text,
-                xPosition:     xPosition,
-                yPosition:     element.y,
-                fontSize:      element.fontSize,
-                elementCenter: elementCenter,
-                alignment:     'left'
-            });
+        } else {
+            bodyLines.push(element);
         }
     }
 
+    const paragraphMap = groupIntoParagraphs(bodyLines);
+
     return {
         headers:        headers.map(h => h.text),
-        paragraphs:     paragraphs.map(p => p.text),
         headerCount:    headers.length,
-        paragraphCount: paragraphs.length,
-        detailed:       { headers, paragraphs }
+        text:           bodyLines.map(l => l.text),
+        textCount:      bodyLines.length,
+        paragraphs:     paragraphMap,
+        paragraphCount: paragraphMap.size,
+        detailed:       { headers, text: bodyLines, paragraphs: paragraphMap }
     };
 }
 

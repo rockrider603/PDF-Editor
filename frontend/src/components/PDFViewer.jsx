@@ -34,6 +34,19 @@ const PageCanvas = ({ page, pageNumber, selectedTool, activeCursor, setActiveCur
 
   const headerTexts = new Set(classification?.headers ?? []);
 
+  // Build a lookup: for each textElement index, which paraId does it belong to?
+  const elementToParaId = new Map();
+  if (classification?.detailed?.paragraphs) {
+      classification.detailed.paragraphs.forEach((para, paraId) => {
+          para.lines.forEach(line => {
+              const idx = textElements.findIndex(
+                  el => el.x === line.x && el.y === line.y && el.text === line.text
+              );
+              if (idx !== -1) elementToParaId.set(idx, paraId);
+          });
+      });
+  }
+
   const handleTextClick = (e, pageIdx, elIdx) => {
     e.stopPropagation();
 
@@ -171,6 +184,7 @@ const PageCanvas = ({ page, pageNumber, selectedTool, activeCursor, setActiveCur
               <div
                 id={`text-el-${pageNumber - 1}-${idx}`}
                 key={`el-${idx}`}
+                data-para-id={elementToParaId.get(idx) ?? 'header'}
                 onClick={(e) => handleTextClick(e, pageNumber - 1, idx)}
                 style={{
                   position: 'absolute',

@@ -38,9 +38,16 @@ console.log("Exists:", fs.existsSync(target));
             console.log("Headers:");
             classification.headers.slice(0, 3).forEach(h => console.log(`  - ${h}`));
         }
-        if (classification.paragraphs.length > 0) {
-            console.log("Paragraphs:");
-            classification.paragraphs.slice(0, 3).forEach(p => console.log(`  - ${p.substring(0, 60)}...`));
+        if (classification.text.length > 0) {
+            console.log("Text lines:");
+            classification.text.slice(0, 3).forEach(p => console.log(`  - ${p.substring(0, 60)}...`));
+        }
+        if (classification.paragraphs && classification.paragraphs.size > 0) {
+            console.log(`Paragraphs (${classification.paragraphs.size}):`);
+            for (const [id, para] of classification.paragraphs.entries()) {
+                console.log(`  Para ${id} (${para.lines.length} lines, x=${para.x}, y=${para.y}):`);
+                para.lines.slice(0, 2).forEach(l => console.log(`    [${l.y.toFixed(1)}] ${l.text.substring(0, 60)}`));
+            }
         }
 
         console.log("\n--- Image Extraction ---");
