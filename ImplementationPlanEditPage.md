@@ -738,3 +738,78 @@ Implement dynamic text reflow that prevents text from overflowing its permitted 
 - Update the text cursor logic: when the cursor reaches the right end of the text section, it should automatically jump to the beginning of the next line.
 - When backspacing or moving left from the start of a line, the cursor should wrap back to the end of the previous line.
 
+---
+
+## Phase 6: Paragraph Detection and Text Block Grouping
+
+### Goal
+Implement a mechanism to detect paragraphs and group multiple lines of text that belong to the same paragraph into a single text unit (block) instead of separate lines. Additionally, add a parameter to classify each text unit as 'line', 'Paragraph', or 'header'.
+
+### Logic
+When a document is converted from Word to PDF, the line spacing (e.g., ~8 pt or 10.64 pixels for an 11 pt font) is preserved. We can use this vertical distance, scaling linearly with font size, along with horizontal coordinates, to determine if a line belongs to the same paragraph or starts a new one.
+
+### Parameters
+We will define the following variables for our algorithm:
+1. **xcurr**: Horizontal starting position of the line being analysed.
+2. **xnorm**: Left x coordinate where the text editing block or the edit toolbar starts.
+3. **xprev**: Horizontal starting position of the previous line.
+4. **xend**: Horizontal point where the previous line finished.
+5. **xmargin**: Right end of the edit toolbar space.
+6. **xthreshold**: Amount of horizontal space a character must move before the algorithm labels it as an indent or a short line.
+7. **ythreshold**: Same as xthreshold but for y coordinates.
+8. **dely**: Distance between the bottom of the top line and the top of the bottom line (normally ~8 pt).
+9. **Multiplierz**: Value applied to the font size to determine the standard line height of the document.
+
+### Priority Queue for Paragraph Detection
+We will evaluate 4 cases in a priority queue to determine if a new paragraph has started. If the first fails, we check the second, and so on. If any case passes, `paragraph detected = true` (i.e., it is a new text block).
+
+1. **Spacing After (Top Priority):** Logic: `dely > (Fontsize) * Multiplierz + ythreshold`
+2. **Short Line:** Logic: `xend < xmargin - xthreshold`
+3. **Indented Start:** Logic: `xcurr > xnorm + xthreshold`
+4. **Hanging Indent:** Logic: `xcurr < xprev`
+
+If all cases fail, the current line is considered a continuation of the previous line and should be grouped into the same text unit.
+
+### Proposed Changes
+- Implement the grouping algorithm in the text processing pipeline to combine lines of the same paragraph into single text blocks.
+- Ensure all text of one paragraph falls under one text block.
+- Add a new parameter (e.g., `textType`) to assign 'line', 'Paragraph', or 'header' based on the text characteristics.
+
+---
+
+## Phase 7: Advanced Editing Mechanics (Delete Key and Big Words Wrap)
+
+### Goal
+Implement sophisticated text-editing behaviors to handle forward deletion and mid-word wrapping for excessively long words.
+
+### Proposed Changes
+
+#### 1. Forward Deletion (Delete Key)
+- **Behavior Mapping:** Implement a specific keydown handler for the `Delete` key (as opposed to `Backspace`).
+- **Cursor Stability:** When the `Delete` key is pressed, the text cursor must remain stationary at its exact coordinates.
+- **Text Modification:** Delete the character immediately to the *right* of the cursor's current position.
+- **Dynamic Formatting & Indentation:** As characters are deleted from the right, the subsequent text must be pulled back. The component must recalculate text widths and adjust the remaining text's layout, maintaining correct indentations and formatting without moving the active cursor position.
+
+#### 2. Big Word Handling (Mid-Word Wrapping)
+- **Boundary Detection:** Monitor the calculated width of the current word being typed against the right margin (`xmargin` / right end of the edit toolbar space).
+- **Overflow Splitting:** If a single continuous word becomes too large and extends beyond this right boundary, intercept the standard rendering flow.
+- **Next-Line Flow:** Force the portion of the word that exceeds the boundary to wrap to a new line. This acts similar to a `word-break: break-all` CSS property but must be calculated manually in the PDF coordinate space. The cursor should jump to the new line alongside the overflowing text segment.
+
+---
+
+## Phase 8: Smart Backspace Wrapping and Greedy Text Reflow
+
+### Goal
+Enhance text deletion behaviors to ensure seamless and visually accurate text wrapping and continuous paragraph reflow when text is removed.
+
+### Proposed Changes
+
+#### 1. Smart Backspace Wrapping
+- **Partial Merging:** When backspacing at the beginning of a line, instead of blindly merging the entire current line into the previous line, the system must calculate the exact remaining space on the previous line (up to `xmargin` / right end of the edit toolbar width).
+- **Residual Wrap:** Only the portion of the current line's text that fits within that available space should be moved to the previous line. Any residual text must be left on the current line (or subsequent lines).
+- **Cursor Repositioning:** The active cursor must accurately reposition itself on the previous line exactly at the juncture where the texts merged.
+
+#### 2. Greedy Text Reflow (Continuous Upward Wrapping)
+- **Space Detection on Deletion:** Whenever text is deleted (via Backspace or Delete) and a line shrinks, the algorithm must calculate the new available space created at the end of that line.
+- **Pulling Upwards:** If there is sufficient space at the end of the current line, the system must pull text from the beginning of the *subsequent* line up into the current line to fill the void.
+- **Cascading Reflow:** This action must cascade through the paragraph. If a subsequent line gives up text to the line above, it must then pull text from the line below it, and so on. This ensures all lines dynamically compact themselves upwards and remain filled up to the edit toolbar boundary.

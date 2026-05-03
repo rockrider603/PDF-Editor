@@ -27,34 +27,48 @@
 
 // ── Factory / Adapter Classes ─────────────────────────────────────────────────
 export { PdfDocument } from './PdfDocument.js';
-export { PdfPage }     from './PdfPage.js';
+export { PdfPage } from './PdfPage.js';
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 export { uint8ToBinaryString, indexOfSeq, allocBytes, asciiToBytes } from './src/utils/bytes.js';
-export { PDF_REGEX }                                                   from './src/utils/pdfRegex.js';
+export { PDF_REGEX } from './src/utils/pdfRegex.js';
 
 // ── Core ──────────────────────────────────────────────────────────────────────
-export { getObject, extractValue,
-         resolveLength, decompressStream }  from './src/core/pdfObjectReader.js';
-export { findRootRef, extractFirstKid }    from './src/core/pdfPageTreeResolver.js';
-export { resolveDictOrRef,
-         extractInlineDictionary }         from './src/core/pdfDictionaryResolver.js';
+export {
+    getObject, extractValue,
+    resolveLength, decompressStream
+} from './src/core/pdfObjectReader.js';
+export { findRootRef, extractFirstKid } from './src/core/pdfPageTreeResolver.js';
+export {
+    resolveDictOrRef,
+    extractInlineDictionary
+} from './src/core/pdfDictionaryResolver.js';
 
 // ── Text ──────────────────────────────────────────────────────────────────────
-export { parseCMap, buildCharMap,
-         translateText, decodeUnicodeHex,
-         getCMapCodeLengths }              from './src/text/pdfCMapParser.js';
-export { findFontAndCMap }                 from './src/text/pdfFontCMapResolver.js';
-export { processContentStream,
-         detectParasAndHeaders,
-         groupIntoParagraphs,
-         decodePdfLiteralString }          from './src/text/pdfContentStreamTextProcessor.js';
+export {
+    parseCMap, buildCharMap,
+    translateText, decodeUnicodeHex,
+    getCMapCodeLengths
+} from './src/text/pdfCMapParser.js';
+export { findFontAndCMap } from './src/text/pdfFontCMapResolver.js';
+export {
+    processContentStream,
+    detectParasAndHeaders,
+    groupIntoParagraphs,
+    decodePdfLiteralString
+} from './src/text/pdfContentStreamTextProcessor.js';
 
 // ── Images ────────────────────────────────────────────────────────────────────
-export { buildXObjectNameMap,
-         parsePaintOperations }            from './src/images/pageContentParser.js';
-export { decodeImageObject,
-         parseImageMetadata }              from './src/images/imageDecoder.js';
-export { extractBackgroundImage,
-         getPageDimensions }              from './src/images/backgroundDetector.js';
-export { scanPageImages }                  from './src/images/imageScanner.js';
+export {
+    buildXObjectNameMap,
+    parsePaintOperations
+} from './src/images/pageContentParser.js';
+export {
+    decodeImageObject,
+    parseImageMetadata
+} from './src/images/imageDecoder.js';
+export {
+    extractBackgroundImage,
+    getPageDimensions
+} from './src/images/backgroundDetector.js';
+export { scanPageImages } from './src/images/imageScanner.js';

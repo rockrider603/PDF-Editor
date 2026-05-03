@@ -19,8 +19,8 @@ const EditingPage = () => {
   } = usePDFStore();
 
   const [selectedTool, setSelectedTool] = useState(null);
-  const [saveSuccess, setSaveSuccess]   = useState(false);
-  const [parseError, setParseError]     = useState(null);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [parseError, setParseError] = useState(null);
 
   // ── Redirect if no PDF is in state ─────────────────────────────────────────
   useEffect(() => {
@@ -39,31 +39,31 @@ const EditingPage = () => {
 
       try {
         // Factory — load the PDF bytes from the File object
-        const doc  = await PdfDocument.fromFile(currentPDF);
+        const doc = await PdfDocument.fromFile(currentPDF);
         const count = doc.pageCount;
         const pagesArray = [];
 
         for (let n = 1; n <= count; n++) {
-            const page   = await doc.getPage(n);
-            const result = await page.extract();
-            
-            // --- ADDED: Print objects info to the terminal (browser console) ---
-            console.log(`\n=== PAGE ${n} OBJECTS INFO ===`);
-            console.log("1. Dimensions:", result.dimensions);
-            console.log(`2. Text Lines (${result.textElements?.length || 0} found):`, result.textElements);
-            console.log("3. Classification:");
-            console.log(`   Headers: ${result.classification?.headerCount ?? 0}`, result.classification?.headers);
-            console.log(`   Text lines: ${result.classification?.textCount ?? 0}`);
-            console.log(`   Paragraphs: ${result.classification?.paragraphCount ?? 0}`);
-            result.classification?.paragraphs?.forEach((para, id) => {
-                console.log(`   Para ${id} (${para.lines.length} lines, x=${para.x}, y=${para.y}):`);
-                para.lines.forEach(l => console.log(`     [${l.y.toFixed(1)}] ${l.text.substring(0, 60)}`));
-            });
-            console.log(`4. Images:`, result.images);
-            console.log("================================\n");
+          const page = await doc.getPage(n);
+          const result = await page.extract();
 
-            if (cancelled) return;
-            pagesArray.push(result);
+          // --- ADDED: Print objects info to the terminal (browser console) ---
+          console.log(`\n=== PAGE ${n} OBJECTS INFO ===`);
+          console.log("1. Dimensions:", result.dimensions);
+          console.log(`2. Text Lines (${result.textElements?.length || 0} found):`, result.textElements);
+          console.log("3. Classification:");
+          console.log(`   Headers: ${result.classification?.headerCount ?? 0}`, result.classification?.headers);
+          console.log(`   Text lines: ${result.classification?.textCount ?? 0}`);
+          console.log(`   Paragraphs: ${result.classification?.paragraphCount ?? 0}`);
+          result.classification?.paragraphs?.forEach((para, id) => {
+            console.log(`   Para ${id} (${para.lines.length} lines, x=${para.x}, y=${para.y}):`);
+            para.lines.forEach(l => console.log(`     [${l.y.toFixed(1)}] ${l.text.substring(0, 60)}`));
+          });
+          console.log(`4. Images:`, result.images);
+          console.log("================================\n");
+
+          if (cancelled) return;
+          pagesArray.push(result);
         }
 
         setPages(pagesArray);
@@ -98,8 +98,8 @@ const EditingPage = () => {
       if (currentPDF) {
         // Fallback to original
         const url = URL.createObjectURL(currentPDF);
-        const a   = document.createElement("a");
-        a.href     = url;
+        const a = document.createElement("a");
+        a.href = url;
         a.download = `original_${currentPDF.name}`;
         document.body.appendChild(a);
         a.click();
@@ -120,45 +120,45 @@ const EditingPage = () => {
 
         // Draw background
         if (images?.background?.dataUrl) {
-           const bgData = images.background.dataUrl;
-           let embeddedImage;
-           if (bgData.includes("image/png")) {
-             embeddedImage = await pdfDoc.embedPng(bgData);
-           } else if (bgData.includes("image/jpeg") || bgData.includes("image/jpg")) {
-             embeddedImage = await pdfDoc.embedJpg(bgData);
-           }
-           if (embeddedImage) {
-             page.drawImage(embeddedImage, {
-               x: 0,
-               y: 0,
-               width: dimensions.width,
-               height: dimensions.height,
-             });
-           }
+          const bgData = images.background.dataUrl;
+          let embeddedImage;
+          if (bgData.includes("image/png")) {
+            embeddedImage = await pdfDoc.embedPng(bgData);
+          } else if (bgData.includes("image/jpeg") || bgData.includes("image/jpg")) {
+            embeddedImage = await pdfDoc.embedJpg(bgData);
+          }
+          if (embeddedImage) {
+            page.drawImage(embeddedImage, {
+              x: 0,
+              y: 0,
+              width: dimensions.width,
+              height: dimensions.height,
+            });
+          }
         }
 
         // Draw page images
         if (images?.pageImages) {
           for (const img of images.pageImages) {
-             const imgData = img.dataUrl;
-             if (!imgData) continue;
-             let embeddedImage;
-             if (imgData.includes("image/png")) {
-               embeddedImage = await pdfDoc.embedPng(imgData);
-             } else if (imgData.includes("image/jpeg") || imgData.includes("image/jpg")) {
-               embeddedImage = await pdfDoc.embedJpg(imgData);
-             }
-             if (embeddedImage) {
-               const ap = img.appearances?.[0];
-               if (ap) {
-                 page.drawImage(embeddedImage, {
-                   x: ap.x || 0,
-                   y: ap.y || 0,
-                   width: ap.renderedWidth || 100,
-                   height: ap.renderedHeight || 100,
-                 });
-               }
-             }
+            const imgData = img.dataUrl;
+            if (!imgData) continue;
+            let embeddedImage;
+            if (imgData.includes("image/png")) {
+              embeddedImage = await pdfDoc.embedPng(imgData);
+            } else if (imgData.includes("image/jpeg") || imgData.includes("image/jpg")) {
+              embeddedImage = await pdfDoc.embedJpg(imgData);
+            }
+            if (embeddedImage) {
+              const ap = img.appearances?.[0];
+              if (ap) {
+                page.drawImage(embeddedImage, {
+                  x: ap.x || 0,
+                  y: ap.y || 0,
+                  width: ap.renderedWidth || 100,
+                  height: ap.renderedHeight || 100,
+                });
+              }
+            }
           }
         }
 

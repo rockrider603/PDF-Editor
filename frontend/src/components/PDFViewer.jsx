@@ -37,14 +37,14 @@ const PageCanvas = ({ page, pageNumber, selectedTool, activeCursor, setActiveCur
   // Build a lookup: for each textElement index, which paraId does it belong to?
   const elementToParaId = new Map();
   if (classification?.detailed?.paragraphs) {
-      classification.detailed.paragraphs.forEach((para, paraId) => {
-          para.lines.forEach(line => {
-              const idx = textElements.findIndex(
-                  el => el.x === line.x && el.y === line.y && el.text === line.text
-              );
-              if (idx !== -1) elementToParaId.set(idx, paraId);
-          });
+    classification.detailed.paragraphs.forEach((para, paraId) => {
+      para.lines.forEach(line => {
+        const idx = textElements.findIndex(
+          el => el.x === line.x && el.y === line.y && el.text === line.text
+        );
+        if (idx !== -1) elementToParaId.set(idx, paraId);
       });
+    });
   }
 
   const handleTextClick = (e, pageIdx, elIdx) => {
@@ -203,20 +203,20 @@ const PageCanvas = ({ page, pageNumber, selectedTool, activeCursor, setActiveCur
                 }}
               >
                 {el.text}
-                
+
                 {/* Render Cursor */}
                 {isActive && (
-                  <div 
+                  <div
                     className="bg-blue-600"
                     style={{
                       position: 'absolute',
                       left: activeCursor.caretX,
-                      top: '-10%',       
+                      top: '-10%',
                       width: '2px',
-                      height: '120%',    
-                      pointerEvents: 'none', 
-                      animation: 'blink 1s step-end infinite' 
-                    }} 
+                      height: '120%',
+                      pointerEvents: 'none',
+                      animation: 'blink 1s step-end infinite'
+                    }}
                   />
                 )}
               </div>
@@ -261,7 +261,7 @@ const PDFViewer = ({
       const scale = CANVAS_WIDTH / (page.dimensions?.width ?? 612);
       const maxWidthInPoints = (CANVAS_WIDTH - 40) / scale - el.x;
       const isHeader = page.classification?.headers?.includes(el.text);
-      
+
       const measureTextWidthPoints = (txt, targetEl = el) => {
         const canvas = document.createElement("canvas");
         const context = canvas.getContext("2d");
@@ -275,30 +275,143 @@ const PDFViewer = ({
 
       if (e.key === 'Backspace') {
         if (newOffset > 0) {
-          newText = newText.slice(0, newOffset - 1) + newText.slice(newOffset);
-          newOffset -= 1;
-          prevent = true;
-        } else if (activeCursor.elIdx > 0) {
-          const prevEl = page.textElements[activeCursor.elIdx - 1];
-          const lineHeight = (el.fontSize || 12) * 1.2;
-          
-          if (prevEl.y > el.y) {
-             const mergedText = prevEl.text + el.text;
-             updateTextElement(activeCursor.pageIdx, activeCursor.elIdx - 1, {
-                 text: mergedText,
-                 width: measureTextWidthPoints(mergedText, prevEl)
-             });
-             removeTextElement(activeCursor.pageIdx, activeCursor.elIdx);
-             shiftElementsBelow(activeCursor.pageIdx, el.y - 1, -lineHeight);
-             
-             setActiveCursor(prev => ({
-                 ...prev,
-                 elIdx: prev.elIdx - 1,
-                 charOffset: prevEl.text.length,
-             }));
-             prevent = true;
-             handledBySpecial = true;
+          // 1. NORMAL CASE: Just delete a character inside the current line
+          let updatedText = newText.slice(0, newOffset - 1) + newText.slice(newOffset);
+
+          let nextElModified = false;
+          let nextElRemaining = "";
+
+          // GREEDY REFLOW: Check if we have free space and can pull from next line
+          if (activeCursor.elIdx < page.textElements.length - 1) {
+             const nextEl = page.textElements[activeCursor.elIdx + 1];
+             const lineHeight = (el.fontSize || 12) * 1.2;
+             const verticalGap = Math.abs(nextEl.y - el.y);
+             const threshold = (el.fontSize || 12) * 1.5;
+
+             if (el.y > nextEl.y && verticalGap < threshold) {
+                 const currMaxWidth = (CANVAS_WIDTH - 40) / scale - el.x;
+                 let freeSpace = currMaxWidth - measureTextWidthPoints(updatedText);
+                 
+                 if (freeSpace > measureTextWidthPoints(" a")) {
+                     const nextWords = nextEl.text.split(' ');
+                     let movedWords = [];
+                     let remainingWords = [...nextWords];
+                     let testText = updatedText;
+
+                     for (let w = 0; w < nextWords.length; w++) {
+                         const testWithWord = testText + (testText.length > 0 ? " " : "") + nextWords[w];
+                         if (measureTextWidthPoints(testWithWord) <= currMaxWidth) {
+                             movedWords.push(nextWords[w]);
+                             remainingWords.shift();
+                             testText = testWithWord;
+                         } else {
+                             break;
+                         }
+                     }
+
+                     if (movedWords.length > 0) {
+                         updatedText = testText;
+                         nextElModified = true;
+                         nextElRemaining = remainingWords.join(' ');
+                     }
+                 }
+             }
           }
+
+          updateTextElement(activeCursor.pageIdx, activeCursor.elIdx, {
+            text: updatedText,
+            width: measureTextWidthPoints(updatedText)
+          });
+
+          if (nextElModified) {
+             if (nextElRemaining.length > 0) {
+                 updateTextElement(activeCursor.pageIdx, activeCursor.elIdx + 1, {
+                    text: nextElRemaining,
+                    width: measureTextWidthPoints(nextElRemaining, page.textElements[activeCursor.elIdx + 1])
+                 });
+             } else {
+                 removeTextElement(activeCursor.pageIdx, activeCursor.elIdx + 1);
+                 shiftElementsBelow(activeCursor.pageIdx, page.textElements[activeCursor.elIdx + 1].y - 1, -((el.fontSize || 12) * 1.2));
+             }
+          }
+
+          setActiveCursor(prev => ({ ...prev, charOffset: newOffset - 1 }));
+          prevent = true;
+          handledBySpecial = true;
+        } else if (activeCursor.elIdx > 0) {
+          // 2. CURSOR IS AT START OF LINE: Decide whether to merge or just jump up
+          const prevElIdx = activeCursor.elIdx - 1;
+          const prevEl = page.textElements[prevElIdx];
+
+          // Use your logic: check if the lines are physically close enough to merge
+          const verticalGap = Math.abs(prevEl.y - el.y);
+          const threshold = (el.fontSize || 12) * 1.5;
+
+          if (prevEl.y > el.y && verticalGap < threshold) {
+            // CASE A: Lines are close together -> SMART MERGE them
+            const prevMaxWidth = (CANVAS_WIDTH - 40) / scale - prevEl.x;
+            const freeSpace = prevMaxWidth - measureTextWidthPoints(prevEl.text, prevEl);
+
+            const words = el.text.split(' ');
+            let movedWords = [];
+            let remainingWords = [...words];
+            let testText = prevEl.text;
+
+            for (let i = 0; i < words.length; i++) {
+                const testWithWord = testText + (testText.length > 0 ? " " : "") + words[i];
+                if (measureTextWidthPoints(testWithWord, prevEl) <= prevMaxWidth) {
+                    movedWords.push(words[i]);
+                    remainingWords.shift();
+                    testText = testWithWord;
+                } else {
+                    break;
+                }
+            }
+
+            if (movedWords.length > 0) {
+                const joinOffset = prevEl.text.length + (prevEl.text.length > 0 ? 1 : 0);
+                const remainingTextStr = remainingWords.join(' ');
+                
+                updateTextElement(activeCursor.pageIdx, prevElIdx, {
+                  text: testText,
+                  width: measureTextWidthPoints(testText, prevEl)
+                });
+
+                if (remainingTextStr.length > 0) {
+                    updateTextElement(activeCursor.pageIdx, activeCursor.elIdx, {
+                        text: remainingTextStr,
+                        width: measureTextWidthPoints(remainingTextStr, el)
+                    });
+                } else {
+                    const lineHeight = (el.fontSize || 12) * 1.2;
+                    removeTextElement(activeCursor.pageIdx, activeCursor.elIdx);
+                    shiftElementsBelow(activeCursor.pageIdx, el.y - 1, -lineHeight);
+                }
+
+                setActiveCursor(prev => ({
+                  ...prev,
+                  elIdx: prevElIdx,
+                  charOffset: joinOffset,
+                }));
+            } else {
+                // CASE B fallback: Just jump up if no words fit
+                setActiveCursor(prev => ({
+                  ...prev,
+                  elIdx: prevElIdx,
+                  charOffset: prevEl.text.length,
+                }));
+            }
+          } else {
+            // CASE B: Lines are far apart -> JUST JUMP the cursor to the previous line
+            setActiveCursor(prev => ({
+              ...prev,
+              elIdx: prevElIdx,
+              charOffset: prevEl.text.length,
+            }));
+          }
+
+          prevent = true;
+          handledBySpecial = true;
         }
       } else if (e.key === 'ArrowLeft') {
         if (newOffset > 0) {
@@ -307,9 +420,9 @@ const PDFViewer = ({
         } else if (activeCursor.elIdx > 0) {
           const prevEl = page.textElements[activeCursor.elIdx - 1];
           setActiveCursor(prev => ({
-             ...prev,
-             elIdx: prev.elIdx - 1,
-             charOffset: prevEl.text.length
+            ...prev,
+            elIdx: prev.elIdx - 1,
+            charOffset: prevEl.text.length
           }));
           prevent = true;
           handledBySpecial = true;
@@ -320,9 +433,9 @@ const PDFViewer = ({
           prevent = true;
         } else if (activeCursor.elIdx < page.textElements.length - 1) {
           setActiveCursor(prev => ({
-             ...prev,
-             elIdx: prev.elIdx + 1,
-             charOffset: 0
+            ...prev,
+            elIdx: prev.elIdx + 1,
+            charOffset: 0
           }));
           prevent = true;
           handledBySpecial = true;
@@ -331,49 +444,49 @@ const PDFViewer = ({
         newText = newText.slice(0, newOffset) + e.key + newText.slice(newOffset);
         newOffset += 1;
         prevent = true;
-        
+
         if (measureTextWidthPoints(newText) > maxWidthInPoints) {
-           const lastSpace = newText.lastIndexOf(' ');
-           if (lastSpace !== -1) {
-              const firstLine = newText.substring(0, lastSpace);
-              const secondLine = newText.substring(lastSpace + 1);
-              
-              updateTextElement(activeCursor.pageIdx, activeCursor.elIdx, {
-                 text: firstLine,
-                 width: measureTextWidthPoints(firstLine)
-              });
-              const lineHeight = (el.fontSize || 12) * 1.2;
-              
-              const newElement = {
-                ...el,
-                text: secondLine,
-                y: el.y - lineHeight,
-                width: measureTextWidthPoints(secondLine),
-              };
-              
-              shiftElementsBelow(activeCursor.pageIdx, el.y - 1, lineHeight);
-              insertTextElement(activeCursor.pageIdx, activeCursor.elIdx, newElement);
-              
-              setActiveCursor(prev => ({
-                 ...prev,
-                 elIdx: prev.elIdx + 1,
-                 charOffset: newOffset > lastSpace ? newOffset - lastSpace - 1 : newOffset,
-                 caretX: 0
-              }));
-              prevent = true;
-              handledBySpecial = true;
-           }
+          const lastSpace = newText.lastIndexOf(' ');
+          if (lastSpace !== -1) {
+            const firstLine = newText.substring(0, lastSpace);
+            const secondLine = newText.substring(lastSpace + 1);
+
+            updateTextElement(activeCursor.pageIdx, activeCursor.elIdx, {
+              text: firstLine,
+              width: measureTextWidthPoints(firstLine)
+            });
+            const lineHeight = (el.fontSize || 12) * 1.2;
+
+            const newElement = {
+              ...el,
+              text: secondLine,
+              y: el.y - lineHeight,
+              width: measureTextWidthPoints(secondLine),
+            };
+
+            shiftElementsBelow(activeCursor.pageIdx, el.y - 1, lineHeight);
+            insertTextElement(activeCursor.pageIdx, activeCursor.elIdx, newElement);
+
+            setActiveCursor(prev => ({
+              ...prev,
+              elIdx: prev.elIdx + 1,
+              charOffset: newOffset > lastSpace ? newOffset - lastSpace - 1 : newOffset,
+              caretX: 0
+            }));
+            prevent = true;
+            handledBySpecial = true;
+          }
         }
       }
 
       if (prevent) {
         e.preventDefault();
         if (!handledBySpecial) {
-           updateTextElement(activeCursor.pageIdx, activeCursor.elIdx, {
-              text: newText,
-              width: measureTextWidthPoints(newText)
-           });
-           setActiveCursor(prev => ({ ...prev, charOffset: newOffset }));
+          updateTextElement(activeCursor.pageIdx, activeCursor.elIdx, {
+            text: newText,
+            width: measureTextWidthPoints(newText)
+          });
+          setActiveCursor(prev => ({ ...prev, charOffset: newOffset }));
         }
       }
     };
