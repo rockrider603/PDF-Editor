@@ -553,11 +553,12 @@ Each `<PageCanvas>` is a `position:relative` div of fixed width 850px:
 
 ### Keyboard Editing (in PDFViewer global `keydown` listener)
 
-- **Printable char**: insert at `charOffset`, word-wrap if line overflows → `insertTextElement + shiftElementsBelow`
-- **Backspace at offset > 0**: delete char before cursor
-- **Backspace at offset 0**: merge with previous element, remove current, shift elements up
-- **ArrowLeft / ArrowRight**: move `charOffset` within element or jump to adjacent element
-- Text width is measured with an off-screen `<canvas>` and `CanvasRenderingContext2D.measureText()`
+- **Printable char**: insert at `charOffset`, word-wrap if line overflows. If the new text exceeds the bounding box, it triggers mid-word wrapping, forcing the overflow to a new line and pushing subsequent elements down via `shiftElementsBelow`.
+- **Backspace at offset > 0**: delete char before cursor.
+- **Backspace at offset 0**: triggers smart backspace wrapping. It measures available space on the previous line and moves only as many words as fit. It pulls up subsequent lines via greedy text reflow (cascading upward text compaction) when space is freed.
+- **Enter**: splits the current text element at the cursor, moves the trailing text to a new line exactly one `lineHeight` below, and shifts all elements below down. Triggers cascading word reflow if the new line overflows.
+- **ArrowLeft / ArrowRight**: move `charOffset` within element or jump to adjacent element.
+- Text width is measured with an off-screen `<canvas>` and `CanvasRenderingContext2D.measureText()`.
 
 ---
 
@@ -709,7 +710,6 @@ cd frontend && npm run dev
 ## Known Limitations / Future Work
 
 - **Text width estimation** is approximate (`text.length * 5.5` pts) — real width requires a font metrics lookup.
-- **Multi-line text flow**: word-wrap on typing uses canvas measurement but only wraps at spaces; mid-word overflow is not handled.
 - **Page tree**: `extractKidN` assumes a flat `/Kids` array (one level). Nested intermediate page nodes (uncommon) will fail.
 - **Font rendering**: all text is displayed in `serif` (browser) and re-exported in `Helvetica` (pdf-lib). Original font faces are not preserved.
 - **Highlight tool**: UI exists but no highlight rendering is implemented yet.

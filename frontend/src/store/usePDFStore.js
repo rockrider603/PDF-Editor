@@ -24,13 +24,21 @@ export const usePDFStore = create((set) => ({
     const newPages = [...state.pages];
     const page = { ...newPages[pageIdx] };
     const elements = [...page.textElements];
-    
+
+    const currentEl = elements[elIdx] || {};
+
     if (typeof updates === 'string') {
-        elements[elIdx] = { ...elements[elIdx], text: updates };
+      elements[elIdx] = { ...currentEl, text: updates };
     } else {
-        elements[elIdx] = { ...elements[elIdx], ...updates };
+      elements[elIdx] = { ...currentEl, ...updates };
+      if (currentEl.isBold && updates.isBold === undefined) {
+        elements[elIdx].isBold = true;
+      }
+      if (currentEl.isItalic && updates.isItalic === undefined) {
+        elements[elIdx].isItalic = true;
+      }
     }
-    
+
     page.textElements = elements;
     newPages[pageIdx] = page;
     return { pages: newPages };
@@ -70,7 +78,7 @@ export const usePDFStore = create((set) => ({
     const newPages = [...state.pages];
     const page = { ...newPages[pageIdx] };
     const elements = [...page.textElements];
-    
+
     for (let i = 0; i < elements.length; i++) {
       if (elements[i].y < yThreshold) {
         elements[i] = { ...elements[i], y: elements[i].y - amount };
@@ -79,22 +87,22 @@ export const usePDFStore = create((set) => ({
     page.textElements = elements;
 
     if (page.images && page.images.pageImages) {
-        const newImages = [...page.images.pageImages];
-        let changed = false;
-        for (let i = 0; i < newImages.length; i++) {
-            const img = newImages[i];
-            if (img.appearances && img.appearances.length > 0) {
-               const ap = { ...img.appearances[0] };
-               if (ap.y < yThreshold) {
-                  ap.y = ap.y - amount;
-                  newImages[i] = { ...img, appearances: [ap] };
-                  changed = true;
-               }
-            }
+      const newImages = [...page.images.pageImages];
+      let changed = false;
+      for (let i = 0; i < newImages.length; i++) {
+        const img = newImages[i];
+        if (img.appearances && img.appearances.length > 0) {
+          const ap = { ...img.appearances[0] };
+          if (ap.y < yThreshold) {
+            ap.y = ap.y - amount;
+            newImages[i] = { ...img, appearances: [ap] };
+            changed = true;
+          }
         }
-        if (changed) page.images = { ...page.images, pageImages: newImages };
+      }
+      if (changed) page.images = { ...page.images, pageImages: newImages };
     }
-    
+
     newPages[pageIdx] = page;
     return { pages: newPages };
   }),

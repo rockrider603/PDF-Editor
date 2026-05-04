@@ -275,80 +275,84 @@ const PDFViewer = ({
 
       if (e.key === 'Backspace') {
         if (newOffset > 0) {
-          // 1. NORMAL CASE: Just delete a character inside the current line
           let updatedText = newText.slice(0, newOffset - 1) + newText.slice(newOffset);
 
           let nextElModified = false;
           let nextElRemaining = "";
 
-          // GREEDY REFLOW: Check if we have free space and can pull from next line
           if (activeCursor.elIdx < page.textElements.length - 1) {
-             const nextEl = page.textElements[activeCursor.elIdx + 1];
-             const lineHeight = (el.fontSize || 12) * 1.2;
-             const verticalGap = Math.abs(nextEl.y - el.y);
-             const threshold = (el.fontSize || 12) * 1.5;
+            const nextEl = page.textElements[activeCursor.elIdx + 1];
+            const lineHeight = (el.fontSize || 12) * 1.2;
+            const verticalGap = Math.abs(nextEl.y - el.y);
+            const threshold = (el.fontSize || 12) * 1.5;
 
-             if (el.y > nextEl.y && verticalGap < threshold) {
-                 const currMaxWidth = (CANVAS_WIDTH - 40) / scale - el.x;
-                 let freeSpace = currMaxWidth - measureTextWidthPoints(updatedText);
-                 
-                 if (freeSpace > measureTextWidthPoints(" a")) {
-                     const nextWords = nextEl.text.split(' ');
-                     let movedWords = [];
-                     let remainingWords = [...nextWords];
-                     let testText = updatedText;
+            if (el.y > nextEl.y && verticalGap < threshold) {
+              const currMaxWidth = (CANVAS_WIDTH - 40) / scale - el.x;
+              let freeSpace = currMaxWidth - measureTextWidthPoints(updatedText);
 
-                     for (let w = 0; w < nextWords.length; w++) {
-                         const testWithWord = testText + (testText.length > 0 ? " " : "") + nextWords[w];
-                         if (measureTextWidthPoints(testWithWord) <= currMaxWidth) {
-                             movedWords.push(nextWords[w]);
-                             remainingWords.shift();
-                             testText = testWithWord;
-                         } else {
-                             break;
-                         }
-                     }
+              if (freeSpace > measureTextWidthPoints(" a")) {
+                const nextWords = nextEl.text.split(' ');
+                let movedWords = [];
+                let remainingWords = [...nextWords];
+                let testText = updatedText;
 
-                     if (movedWords.length > 0) {
-                         updatedText = testText;
-                         nextElModified = true;
-                         nextElRemaining = remainingWords.join(' ');
-                     }
-                 }
-             }
+                for (let w = 0; w < nextWords.length; w++) {
+                  const testWithWord = testText + (testText.length > 0 ? " " : "") + nextWords[w];
+                  if (measureTextWidthPoints(testWithWord) <= currMaxWidth) {
+                    movedWords.push(nextWords[w]);
+                    remainingWords.shift();
+                    testText = testWithWord;
+                  } else {
+                    break;
+                  }
+                }
+
+                if (movedWords.length > 0) {
+                  updatedText = testText;
+                  nextElModified = true;
+                  nextElRemaining = remainingWords.join(' ');
+                }
+              }
+            }
           }
 
-          updateTextElement(activeCursor.pageIdx, activeCursor.elIdx, {
+          let updateParams1 = {
             text: updatedText,
             width: measureTextWidthPoints(updatedText)
-          });
+          };
+          if (el.isBold) updateParams1.isBold = true;
+          if (el.isItalic) updateParams1.isItalic = true;
+
+          updateTextElement(activeCursor.pageIdx, activeCursor.elIdx, updateParams1);
 
           if (nextElModified) {
-             if (nextElRemaining.length > 0) {
-                 updateTextElement(activeCursor.pageIdx, activeCursor.elIdx + 1, {
-                    text: nextElRemaining,
-                    width: measureTextWidthPoints(nextElRemaining, page.textElements[activeCursor.elIdx + 1])
-                 });
-             } else {
-                 removeTextElement(activeCursor.pageIdx, activeCursor.elIdx + 1);
-                 shiftElementsBelow(activeCursor.pageIdx, page.textElements[activeCursor.elIdx + 1].y - 1, -((el.fontSize || 12) * 1.2));
-             }
+            if (nextElRemaining.length > 0) {
+              const nextEl = page.textElements[activeCursor.elIdx + 1];
+              let updateParams2 = {
+                text: nextElRemaining,
+                width: measureTextWidthPoints(nextElRemaining, nextEl)
+              };
+              if (nextEl.isBold) updateParams2.isBold = true;
+              if (nextEl.isItalic) updateParams2.isItalic = true;
+
+              updateTextElement(activeCursor.pageIdx, activeCursor.elIdx + 1, updateParams2);
+            } else {
+              removeTextElement(activeCursor.pageIdx, activeCursor.elIdx + 1);
+              shiftElementsBelow(activeCursor.pageIdx, page.textElements[activeCursor.elIdx + 1].y - 1, -((el.fontSize || 12) * 1.2));
+            }
           }
 
           setActiveCursor(prev => ({ ...prev, charOffset: newOffset - 1 }));
           prevent = true;
           handledBySpecial = true;
         } else if (activeCursor.elIdx > 0) {
-          // 2. CURSOR IS AT START OF LINE: Decide whether to merge or just jump up
           const prevElIdx = activeCursor.elIdx - 1;
           const prevEl = page.textElements[prevElIdx];
 
-          // Use your logic: check if the lines are physically close enough to merge
           const verticalGap = Math.abs(prevEl.y - el.y);
           const threshold = (el.fontSize || 12) * 1.5;
 
           if (prevEl.y > el.y && verticalGap < threshold) {
-            // CASE A: Lines are close together -> SMART MERGE them
             const prevMaxWidth = (CANVAS_WIDTH - 40) / scale - prevEl.x;
             const freeSpace = prevMaxWidth - measureTextWidthPoints(prevEl.text, prevEl);
 
@@ -358,48 +362,56 @@ const PDFViewer = ({
             let testText = prevEl.text;
 
             for (let i = 0; i < words.length; i++) {
-                const testWithWord = testText + (testText.length > 0 ? " " : "") + words[i];
-                if (measureTextWidthPoints(testWithWord, prevEl) <= prevMaxWidth) {
-                    movedWords.push(words[i]);
-                    remainingWords.shift();
-                    testText = testWithWord;
-                } else {
-                    break;
-                }
+              const testWithWord = testText + (testText.length > 0 ? " " : "") + words[i];
+              if (measureTextWidthPoints(testWithWord, prevEl) <= prevMaxWidth) {
+                movedWords.push(words[i]);
+                remainingWords.shift();
+                testText = testWithWord;
+              } else {
+                break;
+              }
             }
 
             if (movedWords.length > 0) {
-                const joinOffset = prevEl.text.length + (prevEl.text.length > 0 ? 1 : 0);
-                const remainingTextStr = remainingWords.join(' ');
-                
-                updateTextElement(activeCursor.pageIdx, prevElIdx, {
-                  text: testText,
-                  width: measureTextWidthPoints(testText, prevEl)
-                });
+              const joinOffset = prevEl.text.length + (prevEl.text.length > 0 ? 1 : 0);
+              const remainingTextStr = remainingWords.join(' ');
 
-                if (remainingTextStr.length > 0) {
-                    updateTextElement(activeCursor.pageIdx, activeCursor.elIdx, {
-                        text: remainingTextStr,
-                        width: measureTextWidthPoints(remainingTextStr, el)
-                    });
-                } else {
-                    const lineHeight = (el.fontSize || 12) * 1.2;
-                    removeTextElement(activeCursor.pageIdx, activeCursor.elIdx);
-                    shiftElementsBelow(activeCursor.pageIdx, el.y - 1, -lineHeight);
-                }
+              let prevUpdateParams = {
+                text: testText,
+                width: measureTextWidthPoints(testText, prevEl)
+              };
+              if (prevEl.isBold) prevUpdateParams.isBold = true;
+              if (prevEl.isItalic) prevUpdateParams.isItalic = true;
 
-                setActiveCursor(prev => ({
-                  ...prev,
-                  elIdx: prevElIdx,
-                  charOffset: joinOffset,
-                }));
+              updateTextElement(activeCursor.pageIdx, prevElIdx, prevUpdateParams);
+
+              if (remainingTextStr.length > 0) {
+                let currentUpdateParams = {
+                  text: remainingTextStr,
+                  width: measureTextWidthPoints(remainingTextStr, el)
+                };
+                if (el.isBold) currentUpdateParams.isBold = true;
+                if (el.isItalic) currentUpdateParams.isItalic = true;
+
+                updateTextElement(activeCursor.pageIdx, activeCursor.elIdx, currentUpdateParams);
+              } else {
+                const lineHeight = (el.fontSize || 12) * 1.2;
+                removeTextElement(activeCursor.pageIdx, activeCursor.elIdx);
+                shiftElementsBelow(activeCursor.pageIdx, el.y - 1, -lineHeight);
+              }
+
+              setActiveCursor(prev => ({
+                ...prev,
+                elIdx: prevElIdx,
+                charOffset: joinOffset,
+              }));
             } else {
-                // CASE B fallback: Just jump up if no words fit
-                setActiveCursor(prev => ({
-                  ...prev,
-                  elIdx: prevElIdx,
-                  charOffset: prevEl.text.length,
-                }));
+              // CASE B fallback: Just jump up if no words fit
+              setActiveCursor(prev => ({
+                ...prev,
+                elIdx: prevElIdx,
+                charOffset: prevEl.text.length,
+              }));
             }
           } else {
             // CASE B: Lines are far apart -> JUST JUMP the cursor to the previous line
@@ -413,6 +425,74 @@ const PDFViewer = ({
           prevent = true;
           handledBySpecial = true;
         }
+      } else if (e.key === 'Enter') {
+        const textBeforeCaret = newText.substring(0, newOffset);
+        let textAfterCaret = newText.substring(newOffset);
+
+        // Remove leading space from text after caret if present, so new line doesn't start with space
+        if (textAfterCaret.startsWith(' ')) {
+          textAfterCaret = textAfterCaret.substring(1);
+        }
+
+        updateTextElement(activeCursor.pageIdx, activeCursor.elIdx, {
+          text: textBeforeCaret,
+          width: measureTextWidthPoints(textBeforeCaret)
+        });
+
+        const lineHeight = (el.fontSize || 12) * 1.2;
+        let newElement = {
+          ...el,
+          text: textAfterCaret,
+          y: el.y - lineHeight,
+          width: measureTextWidthPoints(textAfterCaret),
+        };
+
+        shiftElementsBelow(activeCursor.pageIdx, el.y - 1, lineHeight);
+        insertTextElement(activeCursor.pageIdx, activeCursor.elIdx, newElement);
+
+        setActiveCursor(prev => ({
+          ...prev,
+          elIdx: prev.elIdx + 1,
+          charOffset: 0,
+          caretX: 0
+        }));
+
+        // Handle cascading word reflow if the text moved to the new line exceeds max width
+        let currentNextElIdx = activeCursor.elIdx + 1;
+        let currentNextText = textAfterCaret;
+        let currentNextY = el.y - lineHeight;
+
+        while (measureTextWidthPoints(currentNextText) > maxWidthInPoints) {
+          const lastSpace = currentNextText.lastIndexOf(' ');
+          if (lastSpace !== -1) {
+            const firstLine = currentNextText.substring(0, lastSpace);
+            const secondLine = currentNextText.substring(lastSpace + 1);
+
+            updateTextElement(activeCursor.pageIdx, currentNextElIdx, {
+              text: firstLine,
+              width: measureTextWidthPoints(firstLine)
+            });
+
+            currentNextY -= lineHeight;
+            const nextNewElement = {
+              ...el,
+              text: secondLine,
+              y: currentNextY,
+              width: measureTextWidthPoints(secondLine),
+            };
+
+            shiftElementsBelow(activeCursor.pageIdx, currentNextY - 1, lineHeight);
+            insertTextElement(activeCursor.pageIdx, currentNextElIdx, nextNewElement);
+
+            currentNextElIdx++;
+            currentNextText = secondLine;
+          } else {
+            break;
+          }
+        }
+
+        prevent = true;
+        handledBySpecial = true;
       } else if (e.key === 'ArrowLeft') {
         if (newOffset > 0) {
           newOffset -= 1;

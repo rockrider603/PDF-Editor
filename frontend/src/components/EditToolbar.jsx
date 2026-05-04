@@ -99,11 +99,10 @@ const EditToolbar = ({
                     onTool(isActive ? null : tool.id);
                   }
                 }}
-                className={`btn btn-sm gap-2 transition-all ${
-                  isActive
+                className={`btn btn-sm gap-2 transition-all ${isActive
                     ? "btn-primary"
                     : "btn-outline hover:btn-primary"
-                }`}
+                  }`}
                 title={tool.label}
                 disabled={isLoading || (isFormatTool && activeCursor?.pageIdx === null)}
               >
@@ -129,9 +128,8 @@ const EditToolbar = ({
               <li key={color.name}>
                 <button
                   onClick={() => handleColorSelect(color.value)}
-                  className={`flex gap-2 items-center ${
-                    activeColor === color.value ? "active" : ""
-                  }`}
+                  className={`flex gap-2 items-center ${activeColor === color.value ? "active" : ""
+                    }`}
                 >
                   <div
                     className={`w-5 h-5 rounded border-2 ${color.bg}`}
@@ -147,10 +145,10 @@ const EditToolbar = ({
         {/* Size Selector */}
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-gray-700">Size:</span>
-          <input 
-            type="number" 
-            value={Math.round(activeSize)} 
-            onChange={handleSizeChange} 
+          <input
+            type="number"
+            value={Math.round(activeSize)}
+            onChange={handleSizeChange}
             className="input input-sm input-bordered w-20 px-2"
             min="4"
             max="144"

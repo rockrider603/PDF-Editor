@@ -813,3 +813,27 @@ Enhance text deletion behaviors to ensure seamless and visually accurate text wr
 - **Space Detection on Deletion:** Whenever text is deleted (via Backspace or Delete) and a line shrinks, the algorithm must calculate the new available space created at the end of that line.
 - **Pulling Upwards:** If there is sufficient space at the end of the current line, the system must pull text from the beginning of the *subsequent* line up into the current line to fill the void.
 - **Cascading Reflow:** This action must cascade through the paragraph. If a subsequent line gives up text to the line above, it must then pull text from the line below it, and so on. This ensures all lines dynamically compact themselves upwards and remain filled up to the edit toolbar boundary.
+
+---
+
+## Phase 9: Enter Key Behavior (Line Break and Reflow)
+
+### Goal
+Implement line break functionality when the `Enter` key is pressed during text editing. This will split the current line at the cursor, move the trailing text to a new line, and push all subsequent elements downwards.
+
+### Proposed Changes
+
+#### 1. Enter Key Event Handler
+- Add an `else if (e.key === 'Enter')` block to the `handleKeyDown` listener in `PDFViewer.jsx`.
+- **Text Splitting:** When `Enter` is pressed, split the text of the current element exactly at `activeCursor.charOffset`. The first half remains in the current element (leaving blank space to its right).
+- **New Line Creation:** Create a new text element containing the second half of the text.
+- **Positioning:** The new text element should be positioned exactly one `lineHeight` below the current element. Its `x` coordinate should match the current element's `x` to align it properly.
+
+#### 2. Layout Shifting
+- Before inserting the new line, call `shiftElementsBelow` to shift all elements below the current line down by one `lineHeight` (e.g., `(el.fontSize || 12) * 1.2`).
+- Call `insertTextElement` to insert the new text element into the `usePDFStore` at `activeCursor.elIdx + 1`.
+- **Cursor Repositioning:** Update the active cursor to sit at the very beginning (`charOffset: 0`) of the newly created text element on the next line.
+
+#### 3. Cascading Word Reflow
+- After the line break, if the text moved to the new line happens to exceed the edit toolbar boundary (`xmargin`), standard word wrapping and greedy reflow algorithms must trigger.
+- Ensure that the section of the text that crosses the edit toolbar is pushed to the next line, shifting subsequent elements downwards as necessary, cascading the reflow through the paragraph.
