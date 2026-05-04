@@ -62,6 +62,15 @@ const EditingPage = () => {
           console.log(`4. Images:`, result.images);
           console.log("================================\n");
 
+          if (result.textElements && result.classification?.headers) {
+            result.textElements = result.textElements.map(el => {
+              if (result.classification.headers.includes(el.text)) {
+                return { ...el, isBold: true, isHeader: true };
+              }
+              return el;
+            });
+          }
+
           if (cancelled) return;
           pagesArray.push(result);
         }

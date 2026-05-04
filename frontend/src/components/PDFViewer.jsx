@@ -177,7 +177,7 @@ const PageCanvas = ({ page, pageNumber, selectedTool, activeCursor, setActiveCur
             const cssX = el.x * scale;
             const ascent = (el.fontSize ?? 12) * 0.8;
             const cssY = toCanvasY(el.y, ascent, pageHeight, scale);
-            const isHeader = headerTexts.has(el.text);
+            const isHeader = el.isHeader;
             const isActive = activeCursor?.pageIdx === (pageNumber - 1) && activeCursor?.elIdx === idx;
 
             return (
@@ -260,14 +260,12 @@ const PDFViewer = ({
 
       const scale = CANVAS_WIDTH / (page.dimensions?.width ?? 612);
       const maxWidthInPoints = (CANVAS_WIDTH - 40) / scale - el.x;
-      const isHeader = page.classification?.headers?.includes(el.text);
 
       const measureTextWidthPoints = (txt, targetEl = el) => {
         const canvas = document.createElement("canvas");
         const context = canvas.getContext("2d");
         const fontStyle = targetEl.isItalic ? 'italic ' : '';
-        const isTargetHeader = page.classification?.headers?.includes(targetEl.text);
-        const fontWeight = targetEl.isBold ? 'bold ' : (isTargetHeader ? 'bold ' : 'normal ');
+        const fontWeight = targetEl.isBold || targetEl.isHeader ? 'bold ' : 'normal ';
         const fontSize = targetEl.fontSize || 12;
         context.font = `${fontStyle}${fontWeight}${fontSize}px serif`;
         return context.measureText(txt).width;
