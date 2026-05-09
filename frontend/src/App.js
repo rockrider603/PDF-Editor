@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import Upload from './components/Upload';
-import PdfViewer from './components/PdfViewer';
+import PdfViewer from './components/PDFViewer';
 import './App.css';
 
 function App() {

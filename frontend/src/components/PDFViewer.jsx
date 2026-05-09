@@ -1,232 +1,8 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useEffect } from "react";
 import { Loader2 } from "lucide-react";
 import { usePDFStore } from "../store/usePDFStore";
-
-// Fixed display width of the canvas in CSS pixels.
-// The canvas height is computed from the PDF's aspect ratio.
-const CANVAS_WIDTH = 850;
-
-/**
- * Flips a PDF Y coordinate (bottom-left origin) to a CSS Y coordinate
- * (top-left origin) and applies the scale factor.
- *
- * @param {number} pdfY       - Element's Y position in PDF user-space points
- * @param {number} elHeight   - Element's height in PDF user-space points
- * @param {number} pageHeight - Full page height in PDF user-space points
- * @param {number} scale      - Points-to-pixels scale factor
- * @returns {number} CSS top value in pixels
- */
-function toCanvasY(pdfY, elHeight, pageHeight, scale) {
-  return (pageHeight - pdfY - elHeight) * scale;
-}
-
-// ─── PageCanvas Sub-Component ────────────────────────────────────────────────
-
-const PageCanvas = ({ page, pageNumber, selectedTool, activeCursor, setActiveCursor }) => {
-  const containerRef = useRef(null);
-  const { dimensions, textElements = [], classification = null, images = { background: null, pageImages: [] } } = page;
-
-  const pageWidth = dimensions?.width ?? 612;
-  const pageHeight = dimensions?.height ?? 792;
-
-  const scale = CANVAS_WIDTH / pageWidth;
-  const canvasHeight = pageHeight * scale;
-
-  const headerTexts = new Set(classification?.headers ?? []);
-
-  // Build a lookup: for each textElement index, which paraId does it belong to?
-  const elementToParaId = new Map();
-  if (classification?.detailed?.paragraphs) {
-    classification.detailed.paragraphs.forEach((para, paraId) => {
-      para.lines.forEach(line => {
-        const idx = textElements.findIndex(
-          el => el.x === line.x && el.y === line.y && el.text === line.text
-        );
-        if (idx !== -1) elementToParaId.set(idx, paraId);
-      });
-    });
-  }
-
-  const handleTextClick = (e, pageIdx, elIdx) => {
-    e.stopPropagation();
-
-    let offset = 0;
-    let textNode = null;
-
-    if (document.caretRangeFromPoint) {
-      const range = document.caretRangeFromPoint(e.clientX, e.clientY);
-      if (range && range.startContainer.nodeType === Node.TEXT_NODE) {
-        offset = range.startOffset;
-        textNode = range.startContainer;
-      }
-    } else if (document.caretPositionFromPoint) {
-      const pos = document.caretPositionFromPoint(e.clientX, e.clientY);
-      if (pos && pos.offsetNode.nodeType === Node.TEXT_NODE) {
-        offset = pos.offset;
-        textNode = pos.offsetNode;
-      }
-    }
-
-    let caretX = 0;
-    if (textNode && offset > 0) {
-      const range = document.createRange();
-      range.setStart(textNode, 0);
-      range.setEnd(textNode, offset);
-      caretX = range.getBoundingClientRect().width;
-    }
-
-    setActiveCursor({
-      pageIdx,
-      elIdx,
-      charOffset: offset,
-      caretX,
-    });
-  };
-
-  useEffect(() => {
-    if (activeCursor?.pageIdx === (pageNumber - 1) && activeCursor?.elIdx !== null) {
-      const activeDiv = containerRef.current?.querySelector(`#text-el-${pageNumber - 1}-${activeCursor.elIdx}`);
-      if (activeDiv && activeDiv.firstChild?.nodeType === Node.TEXT_NODE) {
-        const textNode = activeDiv.firstChild;
-        const offset = Math.min(activeCursor.charOffset, textNode.length);
-        if (offset > 0) {
-          const range = document.createRange();
-          try {
-            range.setStart(textNode, 0);
-            range.setEnd(textNode, offset);
-            const newCaretX = range.getBoundingClientRect().width;
-            if (Math.abs(newCaretX - activeCursor.caretX) > 0.5) {
-              setActiveCursor(prev => ({ ...prev, caretX: newCaretX }));
-            }
-          } catch (e) {
-            console.warn("Failed to measure caret:", e);
-          }
-        } else {
-          if (activeCursor.caretX !== 0) {
-            setActiveCursor(prev => ({ ...prev, caretX: 0 }));
-          }
-        }
-      }
-    }
-  }, [textElements, activeCursor?.charOffset, activeCursor?.pageIdx, activeCursor?.elIdx, pageNumber, setActiveCursor]);
-
-  return (
-    <div className="flex flex-col items-center">
-      <div className="mb-2 text-sm text-gray-500 font-medium">Page {pageNumber}</div>
-      <div className="overflow-auto rounded-lg shadow-xl border border-gray-200" style={{ maxWidth: '100%' }}>
-        <div
-          ref={containerRef}
-          id={`pdf-canvas-page-${pageNumber}`}
-          style={{
-            position: 'relative',
-            width: CANVAS_WIDTH,
-            height: canvasHeight,
-            backgroundColor: '#ffffff',
-            overflow: 'hidden',
-            flexShrink: 0,
-          }}
-        >
-          {/* ── Layer 0: Background Image ────────────────────────────────────── */}
-          {images.background?.dataUrl && (
-            <img
-              src={images.background.dataUrl}
-              alt={`PDF background page ${pageNumber}`}
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: '100%',
-                height: '100%',
-                objectFit: 'fill',
-                zIndex: 0,
-                pointerEvents: 'none',
-              }}
-            />
-          )}
-
-          {/* ── Layer 1: Page Images ─────────────────────────────────────────── */}
-          {(images.pageImages ?? []).map((img, idx) => {
-            const ap = img.appearances?.[0];
-            if (!ap) return null;
-
-            const cssX = ap.x * scale;
-            const cssY = toCanvasY(ap.y, ap.renderedHeight, pageHeight, scale);
-            const cssW = ap.renderedWidth * scale;
-            const cssH = ap.renderedHeight * scale;
-
-            return (
-              <img
-                key={`img-${idx}`}
-                src={img.dataUrl}
-                alt={`PDF image ${idx + 1}`}
-                style={{
-                  position: 'absolute',
-                  left: cssX,
-                  top: cssY,
-                  width: cssW,
-                  height: cssH,
-                  zIndex: 1,
-                  pointerEvents: 'none',
-                }}
-              />
-            );
-          })}
-
-          {/* ── Layer 2: Text ────────────────────────────────────────────────── */}
-          {textElements.map((el, idx) => {
-            const cssX = el.x * scale;
-            const ascent = (el.fontSize ?? 12) * 0.8;
-            const cssY = toCanvasY(el.y, ascent, pageHeight, scale);
-            const isHeader = el.isHeader;
-            const isActive = activeCursor?.pageIdx === (pageNumber - 1) && activeCursor?.elIdx === idx;
-
-            return (
-              <div
-                id={`text-el-${pageNumber - 1}-${idx}`}
-                key={`el-${idx}`}
-                data-para-id={elementToParaId.get(idx) ?? 'header'}
-                onClick={(e) => handleTextClick(e, pageNumber - 1, idx)}
-                style={{
-                  position: 'absolute',
-                  left: cssX,
-                  top: cssY,
-                  fontSize: (el.fontSize ?? 12) * scale,
-                  fontFamily: 'serif',
-                  fontWeight: el.isBold ? 'bold' : (isHeader ? 'bold' : 'normal'),
-                  fontStyle: el.isItalic ? 'italic' : 'normal',
-                  whiteSpace: 'nowrap',
-                  color: el.color || (isHeader ? '#111827' : '#1f2937'),
-                  zIndex: 2,
-                  userSelect: 'none',
-                  cursor: 'text',
-                  lineHeight: 1,
-                }}
-              >
-                {el.text}
-
-                {/* Render Cursor */}
-                {isActive && (
-                  <div
-                    className="bg-blue-600"
-                    style={{
-                      position: 'absolute',
-                      left: activeCursor.caretX,
-                      top: '-10%',
-                      width: '2px',
-                      height: '120%',
-                      pointerEvents: 'none',
-                      animation: 'blink 1s step-end infinite'
-                    }}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-};
+import PageCanvas from "./PageCanvas";
+import { CANVAS_WIDTH } from "./pdfConstants";
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
@@ -237,11 +13,16 @@ const PDFViewer = ({
 }) => {
   const activeCursor = usePDFStore((state) => state.activeCursor);
   const setActiveCursor = usePDFStore((state) => state.setActiveCursor);
+  const activeImage = usePDFStore((state) => state.activeImage);
+  const setActiveImage = usePDFStore((state) => state.setActiveImage);
+  const updatePageImage = usePDFStore((state) => state.updatePageImage);
+  const resizePageImage = usePDFStore((state) => state.resizePageImage);
 
   const updateTextElement = usePDFStore((state) => state.updateTextElement);
   const insertTextElement = usePDFStore((state) => state.insertTextElement);
   const removeTextElement = usePDFStore((state) => state.removeTextElement);
   const shiftElementsBelow = usePDFStore((state) => state.shiftElementsBelow);
+  const shiftElementsAbove = usePDFStore((state) => state.shiftElementsAbove);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -336,7 +117,7 @@ const PDFViewer = ({
               updateTextElement(activeCursor.pageIdx, activeCursor.elIdx + 1, updateParams2);
             } else {
               removeTextElement(activeCursor.pageIdx, activeCursor.elIdx + 1);
-              shiftElementsBelow(activeCursor.pageIdx, page.textElements[activeCursor.elIdx + 1].y - 1, -((el.fontSize || 12) * 1.2));
+              shiftElementsAbove(activeCursor.pageIdx, page.textElements[activeCursor.elIdx + 1].y - 1, ((el.fontSize || 12) * 1.2));
             }
           }
 
@@ -395,7 +176,7 @@ const PDFViewer = ({
               } else {
                 const lineHeight = (el.fontSize || 12) * 1.2;
                 removeTextElement(activeCursor.pageIdx, activeCursor.elIdx);
-                shiftElementsBelow(activeCursor.pageIdx, el.y - 1, -lineHeight);
+                shiftElementsAbove(activeCursor.pageIdx, el.y - 1, lineHeight);
               }
 
               setActiveCursor(prev => ({
@@ -604,7 +385,7 @@ const PDFViewer = ({
       style={{
         overflowY: 'auto',
         maxHeight: 'calc(100vh - 180px)',
-        background: '#e5e7eb',    // grey inter-page area
+        background: '#e5e7eb',
         padding: '24px 0',
         display: 'flex',
         flexDirection: 'column',
@@ -620,6 +401,10 @@ const PDFViewer = ({
           selectedTool={selectedTool}
           activeCursor={activeCursor}
           setActiveCursor={setActiveCursor}
+          activeImage={activeImage}
+          setActiveImage={setActiveImage}
+          updatePageImage={updatePageImage}
+          resizePageImage={resizePageImage}
         />
       ))}
     </div>
