@@ -1,5 +1,37 @@
 import { create } from "zustand";
 
+// Marker temporarily attached to a text element so the store can locate it
+// after applyGlobalReflow rebuilds the pages array (rebuild creates new
+// objects, so reference equality wouldn't survive). Always stripped before
+// the new state is published.
+const CURSOR_MARKER = '__pendingCursor';
+
+const findAndStripCursorMarker = (pages, fallbackCursor) => {
+  let newCursor = null;
+  let anyChange = false;
+  const updatedPages = pages.map((p, pIdx) => {
+    let pageChanged = false;
+    const newEls = p.textElements.map((el, eIdx) => {
+      if (el && el[CURSOR_MARKER]) {
+        const marker = el[CURSOR_MARKER];
+        const { [CURSOR_MARKER]: _, ...clean } = el;
+        pageChanged = true;
+        anyChange = true;
+        newCursor = {
+          pageIdx: pIdx,
+          elIdx: eIdx,
+          charOffset: typeof marker === 'object' ? (marker.charOffset ?? 0) : 0,
+          caretX: 0,
+        };
+        return clean;
+      }
+      return el;
+    });
+    return pageChanged ? { ...p, textElements: newEls } : p;
+  });
+  return { pages: anyChange ? updatedPages : pages, cursor: newCursor ?? fallbackCursor };
+};
+
 const applyGlobalReflow = (pages, startPageIdx, yThreshold, amount, skipFilter = null) => {
   // NOTE: we intentionally do NOT short-circuit on amount===0.
   // Callers pass amount=0 as a pure page-boundary normalisation pass
@@ -328,7 +360,10 @@ export const usePDFStore = create((set) => ({
   /**
    * Atomically splits a text element at charOffset (Enter key).
    * Updates the current element's text, inserts the new line element,
-   * and shifts everything below — all in one state mutat   */
+   * and shifts everything below — all in one state mutation. The new line
+   * is tagged with CURSOR_MARKER so we can locate its final (pageIdx, elIdx)
+   * after reflow — critical when the new line overflows to the next page.
+   */
   splitTextElement: (pageIdx, elIdx, textBefore, textAfter, lineHeight, measureFn) => set((state) => {
     // Step 1: update current element only (new line NOT yet in the array)
     const pages0 = [...state.pages];
@@ -357,6 +392,7 @@ export const usePDFStore = create((set) => ({
       text: textAfter,
       y: (elAfterShift?.y ?? currentEl.y) - lineHeight,
       width: measureFn(textAfter),
+      [CURSOR_MARKER]: { charOffset: 0 },
     };
     delete newLineEl.flowY;
 
@@ -367,14 +403,29 @@ export const usePDFStore = create((set) => ({
     // Step 4: page-boundary normalisation with amount=0.
     // No flowY shifts happen; only elements below their page margin are moved
     // to the next page (e.g. the new line if it crossed the bottom margin).
-    return { pages: applyGlobalReflow(pagesForInsert, pageIdx, -1, 0) };
+    const finalPages = applyGlobalReflow(pagesForInsert, pageIdx, -1, 0);
+
+    // Step 5: locate the marked new line — it may have landed on a freshly
+    // created page if the split happened near the page bottom — and hand
+    // the cursor over to it.
+    const { pages: cleanPages, cursor } = findAndStripCursorMarker(finalPages, state.activeCursor);
+    return { pages: cleanPages, activeCursor: cursor };
   }),
 
   /**
    * Atomically wraps an overflowing line when typing causes width overflow.
    * Same insert-after-shift pattern as splitTextElement.
+   *
+   * cursorTarget = { onNewLine: boolean, charOffset: number }
+   *   onNewLine=true  → cursor goes to the wrapped (second) line
+   *   onNewLine=false → cursor stays on the first line at charOffset
+   * Either way the marker survives reflow so a page-overflow lands the
+   * cursor on the correct (pageIdx, elIdx) — including new pages.
    */
-  wrapTextElement: (pageIdx, elIdx, firstLineText, secondLineText, lineHeight, measureFn) => set((state) => {
+  wrapTextElement: (pageIdx, elIdx, firstLineText, secondLineText, lineHeight, measureFn, cursorTarget) => set((state) => {
+    const onNewLine = cursorTarget ? cursorTarget.onNewLine !== false : true;
+    const cursorOffset = cursorTarget?.charOffset ?? 0;
+
     // Step 1: update current element (overflow line NOT yet in array)
     const pages0 = [...state.pages];
     const page0 = { ...pages0[pageIdx] };
@@ -382,7 +433,13 @@ export const usePDFStore = create((set) => ({
     const currentEl = els0[elIdx];
     if (!currentEl) return {};
 
-    els0[elIdx] = { ...currentEl, text: firstLineText, width: measureFn(firstLineText) };
+    const firstLineUpdate = {
+      ...currentEl,
+      text: firstLineText,
+      width: measureFn(firstLineText),
+    };
+    if (!onNewLine) firstLineUpdate[CURSOR_MARKER] = { charOffset: cursorOffset };
+    els0[elIdx] = firstLineUpdate;
     page0.textElements = els0;
     pages0[pageIdx] = page0;
 
@@ -401,6 +458,7 @@ export const usePDFStore = create((set) => ({
       y: (elAfterShift?.y ?? currentEl.y) - lineHeight,
       width: measureFn(secondLineText),
     };
+    if (onNewLine) newLineEl[CURSOR_MARKER] = { charOffset: cursorOffset };
     delete newLineEl.flowY;
 
     elsForInsert.splice(elIdx + 1, 0, newLineEl);
@@ -408,7 +466,9 @@ export const usePDFStore = create((set) => ({
     pagesForInsert[pageIdx] = pageForInsert;
 
     // Step 4: page-boundary normalisation only (amount=0)
-    return { pages: applyGlobalReflow(pagesForInsert, pageIdx, -1, 0) };
+    const finalPages = applyGlobalReflow(pagesForInsert, pageIdx, -1, 0);
+    const { pages: cleanPages, cursor } = findAndStripCursorMarker(finalPages, state.activeCursor);
+    return { pages: cleanPages, activeCursor: cursor };
   }),
 
   removeTextElement: (pageIdx, elIdx) => set((state) => {

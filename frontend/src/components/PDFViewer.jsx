@@ -218,6 +218,9 @@ const PDFViewer = ({
         const lineHeight = (el.fontSize || 12) * 1.2;
 
         // Single atomic call: updates current el, inserts new el, reflows
+        // across page boundaries, AND moves activeCursor to the new line's
+        // final (pageIdx, elIdx) — which may be on a freshly-created page
+        // when the split happens at the bottom margin.
         splitTextElement(
           activeCursor.pageIdx,
           activeCursor.elIdx,
@@ -226,13 +229,6 @@ const PDFViewer = ({
           lineHeight,
           (txt) => measureTextWidthPoints(txt)
         );
-
-        setActiveCursor(prev => ({
-          ...prev,
-          elIdx: prev.elIdx + 1,
-          charOffset: 0,
-          caretX: 0
-        }));
 
         prevent = true;
         handledBySpecial = true;
@@ -275,22 +271,21 @@ const PDFViewer = ({
             const secondLine = newText.substring(lastSpace + 1);
             const lineHeight = (el.fontSize || 12) * 1.2;
 
-            // Atomic: update current line + insert overflow line + page-boundary check
+            // Atomic: update current line + insert overflow line + page-boundary
+            // check. The cursor target is computed from where the typed char
+            // landed relative to the wrap point — store places the cursor on
+            // the correct line, on the correct page (even if it overflowed).
+            const onNewLine = newOffset > lastSpace;
+            const targetCharOffset = onNewLine ? newOffset - lastSpace - 1 : newOffset;
             wrapTextElement(
               activeCursor.pageIdx,
               activeCursor.elIdx,
               firstLine,
               secondLine,
               lineHeight,
-              (txt) => measureTextWidthPoints(txt)
+              (txt) => measureTextWidthPoints(txt),
+              { onNewLine, charOffset: targetCharOffset }
             );
-
-            setActiveCursor(prev => ({
-              ...prev,
-              elIdx: prev.elIdx + 1,
-              charOffset: newOffset > lastSpace ? newOffset - lastSpace - 1 : newOffset,
-              caretX: 0
-            }));
             prevent = true;
             handledBySpecial = true;
           }

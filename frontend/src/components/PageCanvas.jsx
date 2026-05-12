@@ -63,6 +63,16 @@ const PageCanvas = ({ page, pageNumber, selectedTool, activeCursor, setActiveCur
     });
   };
 
+  // Scroll the active page into view when the cursor moves to it.
+  // `block: 'nearest'` is a no-op when the page is already visible, so
+  // normal in-page typing doesn't jolt the viewport — only cross-page
+  // moves (e.g. Enter overflowing to a new page) trigger a scroll.
+  useEffect(() => {
+    if (activeCursor?.pageIdx === (pageNumber - 1) && containerRef.current) {
+      containerRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [activeCursor?.pageIdx, pageNumber]);
+
   useEffect(() => {
     if (activeCursor?.pageIdx === (pageNumber - 1) && activeCursor?.elIdx !== null) {
       const activeDiv = containerRef.current?.querySelector(`#text-el-${pageNumber - 1}-${activeCursor.elIdx}`);
