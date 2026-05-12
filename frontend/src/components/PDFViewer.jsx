@@ -19,6 +19,8 @@ const PDFViewer = ({
   const resizePageImage = usePDFStore((state) => state.resizePageImage);
 
   const updateTextElement = usePDFStore((state) => state.updateTextElement);
+  const splitTextElement = usePDFStore((state) => state.splitTextElement);
+  const wrapTextElement = usePDFStore((state) => state.wrapTextElement);
   const insertTextElement = usePDFStore((state) => state.insertTextElement);
   const removeTextElement = usePDFStore((state) => state.removeTextElement);
   const shiftElementsBelow = usePDFStore((state) => state.shiftElementsBelow);
@@ -208,26 +210,22 @@ const PDFViewer = ({
         const textBeforeCaret = newText.substring(0, newOffset);
         let textAfterCaret = newText.substring(newOffset);
 
-        // Remove leading space from text after caret if present, so new line doesn't start with space
+        // Remove leading space from text after caret if present
         if (textAfterCaret.startsWith(' ')) {
           textAfterCaret = textAfterCaret.substring(1);
         }
 
-        updateTextElement(activeCursor.pageIdx, activeCursor.elIdx, {
-          text: textBeforeCaret,
-          width: measureTextWidthPoints(textBeforeCaret)
-        });
-
         const lineHeight = (el.fontSize || 12) * 1.2;
-        let newElement = {
-          ...el,
-          text: textAfterCaret,
-          y: el.y - lineHeight,
-          width: measureTextWidthPoints(textAfterCaret),
-        };
 
-        shiftElementsBelow(activeCursor.pageIdx, el.y - 1, lineHeight);
-        insertTextElement(activeCursor.pageIdx, activeCursor.elIdx, newElement);
+        // Single atomic call: updates current el, inserts new el, reflows
+        splitTextElement(
+          activeCursor.pageIdx,
+          activeCursor.elIdx,
+          textBeforeCaret,
+          textAfterCaret,
+          lineHeight,
+          (txt) => measureTextWidthPoints(txt)
+        );
 
         setActiveCursor(prev => ({
           ...prev,
@@ -235,40 +233,6 @@ const PDFViewer = ({
           charOffset: 0,
           caretX: 0
         }));
-
-        // Handle cascading word reflow if the text moved to the new line exceeds max width
-        let currentNextElIdx = activeCursor.elIdx + 1;
-        let currentNextText = textAfterCaret;
-        let currentNextY = el.y - lineHeight;
-
-        while (measureTextWidthPoints(currentNextText) > maxWidthInPoints) {
-          const lastSpace = currentNextText.lastIndexOf(' ');
-          if (lastSpace !== -1) {
-            const firstLine = currentNextText.substring(0, lastSpace);
-            const secondLine = currentNextText.substring(lastSpace + 1);
-
-            updateTextElement(activeCursor.pageIdx, currentNextElIdx, {
-              text: firstLine,
-              width: measureTextWidthPoints(firstLine)
-            });
-
-            currentNextY -= lineHeight;
-            const nextNewElement = {
-              ...el,
-              text: secondLine,
-              y: currentNextY,
-              width: measureTextWidthPoints(secondLine),
-            };
-
-            shiftElementsBelow(activeCursor.pageIdx, currentNextY - 1, lineHeight);
-            insertTextElement(activeCursor.pageIdx, currentNextElIdx, nextNewElement);
-
-            currentNextElIdx++;
-            currentNextText = secondLine;
-          } else {
-            break;
-          }
-        }
 
         prevent = true;
         handledBySpecial = true;
@@ -309,22 +273,17 @@ const PDFViewer = ({
           if (lastSpace !== -1) {
             const firstLine = newText.substring(0, lastSpace);
             const secondLine = newText.substring(lastSpace + 1);
-
-            updateTextElement(activeCursor.pageIdx, activeCursor.elIdx, {
-              text: firstLine,
-              width: measureTextWidthPoints(firstLine)
-            });
             const lineHeight = (el.fontSize || 12) * 1.2;
 
-            const newElement = {
-              ...el,
-              text: secondLine,
-              y: el.y - lineHeight,
-              width: measureTextWidthPoints(secondLine),
-            };
-
-            shiftElementsBelow(activeCursor.pageIdx, el.y - 1, lineHeight);
-            insertTextElement(activeCursor.pageIdx, activeCursor.elIdx, newElement);
+            // Atomic: update current line + insert overflow line + page-boundary check
+            wrapTextElement(
+              activeCursor.pageIdx,
+              activeCursor.elIdx,
+              firstLine,
+              secondLine,
+              lineHeight,
+              (txt) => measureTextWidthPoints(txt)
+            );
 
             setActiveCursor(prev => ({
               ...prev,

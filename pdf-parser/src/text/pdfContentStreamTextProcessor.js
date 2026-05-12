@@ -169,7 +169,7 @@ export function groupIntoParagraphs(bodyLines) {
         const xprev = prev.x;
         const xend = prev.x + (prev.width || 0);
         const dely = prev.y - curr.y; // Positive since sorted by descending y
-        
+
         const fontSize = curr.fontSize || DEFAULT_LINE_HEIGHT;
 
         let isNewParagraph = false;
@@ -291,15 +291,15 @@ export function detectParasAndHeaders(textElements, pageWidth = 612) {
     }
 
     const paragraphMap = groupIntoParagraphs(bodyLines);
-    
+
     const paragraphBlocks = Array.from(paragraphMap.values());
     const allBlocks = [...headers, ...paragraphBlocks].sort((a, b) => (b.y || b.yPosition || 0) - (a.y || a.yPosition || 0));
 
-    console.log("----- Extracted Text Blocks -----");
-    for (const block of allBlocks) {
-        console.log(`[Type: ${block.type}] ${block.text.substring(0, 100)}`);
-    }
-    console.log("---------------------------------");
+    // console.log("----- Extracted Text Blocks -----");
+    // for (const block of allBlocks) {
+    //     console.log(`[Type: ${block.type}] ${block.text.substring(0, 100)}`);
+    // }
+    // console.log("---------------------------------");
 
     return {
         headers: headers.map(h => h.text),

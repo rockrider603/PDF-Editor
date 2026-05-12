@@ -1,7 +1,9 @@
 import { create } from "zustand";
 
 const applyGlobalReflow = (pages, startPageIdx, yThreshold, amount, skipFilter = null) => {
-  if (amount === 0) return [...pages];
+  // NOTE: we intentionally do NOT short-circuit on amount===0.
+  // Callers pass amount=0 as a pure page-boundary normalisation pass
+  // (no flowY shifts, just checks that elements respect top/bottom margins).
 
   const pageOffsets = [];
   let currentOffset = 0;
@@ -10,53 +12,63 @@ const applyGlobalReflow = (pages, startPageIdx, yThreshold, amount, skipFilter =
     currentOffset += (p.dimensions?.height ?? 792);
   }
 
+  // ── Build allElements from pages (text + images) ─────────────────────────
+  // Text elements: read directly from pages (which already have the correct
+  // updated/inserted text from the caller — no stale rebuild).
+  // Images: always built fresh from page.images.
   let allElements = [];
   pages.forEach((page, pIdx) => {
     const pHeight = page.dimensions?.height ?? 792;
+
+    // Text
     page.textElements.forEach((el, elIdx) => {
+      const globalY = pageOffsets[pIdx] + (pHeight - el.y);
       allElements.push({
         type: 'text',
         originalPage: pIdx,
         originalIdx: elIdx,
-        globalY: pageOffsets[pIdx] + (pHeight - el.y),
-        data: el
+        globalY,
+        flowY: globalY, // always fresh — recompute from current y, never accumulate
+        data: el,
+        height: (el.fontSize || 12) * 1.2
       });
     });
+
+    // Images (built by reflow itself, not the caller)
     page.images?.pageImages?.forEach((img, imgIdx) => {
       const ap = img.appearances?.[0];
       if (ap) {
+        const globalY = pageOffsets[pIdx] + (pHeight - ap.y);
         allElements.push({
           type: 'image',
           originalPage: pIdx,
           originalIdx: imgIdx,
-          globalY: pageOffsets[pIdx] + (pHeight - ap.y),
+          globalY,
+          flowY: globalY, // always fresh
           data: img,
-          ap: ap
+          ap,
+          height: ap.renderedHeight || 100
         });
       }
     });
   });
 
+  // ── Compute shift threshold ───────────────────────────────────────────────
   const targetPageHeight = pages[startPageIdx].dimensions?.height ?? 792;
   const globalThreshold = pageOffsets[startPageIdx] + (targetPageHeight - yThreshold);
 
+  // Apply the requested shift to every element whose flowY is below the threshold
   allElements.forEach(item => {
-    if (skipFilter && skipFilter(item)) return;
-    if (item.globalY > globalThreshold + 0.1) {
-      item.globalY += amount;
+    if (!skipFilter || !skipFilter(item)) {
+      if (item.flowY > globalThreshold + 0.1) {
+        item.flowY += amount;
+      }
     }
-    
-    let height = 0;
-    if (item.type === 'text') {
-      height = (item.data.fontSize || 12) * 1.2;
-    } else if (item.type === 'image') {
-      height = item.ap.renderedHeight || 100;
-    }
-    item.height = height;
   });
 
-  allElements.sort((a, b) => a.globalY - b.globalY);
+  allElements.sort((a, b) => a.flowY - b.flowY);
 
+  // ── Page info helper ──────────────────────────────────────────────────────
   const getPageInfo = (gY) => {
     if (gY < 0) gY = 0;
     let pIdx = 0;
@@ -72,47 +84,51 @@ const applyGlobalReflow = (pages, startPageIdx, yThreshold, amount, skipFilter =
     }
   };
 
-  let cumulativeShift = 0;
   const MARGIN = 48;
 
-  for (const item of allElements) {
-    item.globalY += cumulativeShift;
+  // ── Per-element page placement ────────────────────────────────────────────
+  // Each element starts from its own fresh flowY, but is constrained to come
+  // AFTER the previous element ends (Word-like flow order).
+  // minGlobalY = prevFinalY + prevHeight ensures images on page 2 hold
+  // subsequent text to page 2. No drift because flowY is always fresh.
+  let minGlobalY = 0;
 
-    let { pageIdx, pOffset, nextOffset } = getPageInfo(item.globalY);
+  for (const item of allElements) {
+    let intendedGlobalY = Math.max(item.flowY, minGlobalY);
+
+    let { pageIdx, pOffset, nextOffset } = getPageInfo(intendedGlobalY);
     let pHeight = nextOffset - pOffset;
-    let localY = pHeight - (item.globalY - pOffset);
-    
+    let localY = pHeight - (intendedGlobalY - pOffset);
+
     const usableHeight = pHeight - 2 * MARGIN;
     const isOversized = item.height > usableHeight;
 
-    // 1. Check if it sticks out the TOP of the usable area (pHeight - MARGIN)
+    // 1. Top margin: element is too close to the top of the page
     if (localY + item.height > pHeight - MARGIN) {
       const topGlobalY = pOffset + MARGIN + item.height;
-      const shiftNeeded = topGlobalY - item.globalY;
+      const shiftNeeded = topGlobalY - intendedGlobalY;
       if (shiftNeeded > 0) {
-        item.globalY += shiftNeeded;
-        cumulativeShift += shiftNeeded;
-        
-        // Re-evaluate position
-        const info = getPageInfo(item.globalY);
+        intendedGlobalY = topGlobalY; // nudge only this element
+        const info = getPageInfo(intendedGlobalY);
         pageIdx = info.pageIdx; pOffset = info.pOffset; nextOffset = info.nextOffset;
         pHeight = nextOffset - pOffset;
-        localY = pHeight - (item.globalY - pOffset);
+        localY = pHeight - (intendedGlobalY - pOffset);
       }
     }
 
-    // 2. Check if it sticks out the BOTTOM of the usable area
+    // 2. Bottom margin: element fell below the bottom of its page → push to next page top
     if (!isOversized && localY < MARGIN) {
+      // Place at the top of the NEXT page (reset to just inside top margin)
       const nextPageTopGlobalY = nextOffset + MARGIN + item.height;
-      const shiftNeeded = nextPageTopGlobalY - item.globalY;
-      
-      if (shiftNeeded > 0) {
-        item.globalY += shiftNeeded;
-        cumulativeShift += shiftNeeded;
-      }
+      intendedGlobalY = nextPageTopGlobalY; // nudge only this element, no accumulation
     }
+
+    item.finalGlobalY = intendedGlobalY;
+    // Next element must start after this one ends (maintains flow order)
+    minGlobalY = intendedGlobalY + item.height;
   }
 
+  // ── Rebuild pages from final positions ───────────────────────────────────
   const newPages = pages.map(p => ({
     ...p,
     textElements: [],
@@ -120,8 +136,8 @@ const applyGlobalReflow = (pages, startPageIdx, yThreshold, amount, skipFilter =
   }));
 
   allElements.forEach(item => {
-    const { pageIdx, pOffset, nextOffset } = getPageInfo(item.globalY);
-    
+    const { pageIdx, pOffset, nextOffset } = getPageInfo(item.finalGlobalY);
+
     while (pageIdx >= newPages.length) {
       const lastPage = newPages[newPages.length - 1];
       newPages.push({
@@ -133,14 +149,17 @@ const applyGlobalReflow = (pages, startPageIdx, yThreshold, amount, skipFilter =
     }
 
     const pHeight = nextOffset - pOffset;
-    const localY = pHeight - (item.globalY - pOffset);
+    const localY = pHeight - (item.finalGlobalY - pOffset);
 
     if (item.type === 'text') {
-      newPages[pageIdx].textElements.push({ ...item.data, y: localY });
+      // Never persist flowY — recompute fresh on every reflow to avoid drift
+      const { flowY: _drop, ...elData } = item.data;
+      newPages[pageIdx].textElements.push({ ...elData, y: localY });
     } else if (item.type === 'image') {
+      const { flowY: _dropAp, ...apData } = item.ap;
       newPages[pageIdx].images.pageImages.push({
         ...item.data,
-        appearances: [{ ...item.ap, y: localY }]
+        appearances: [{ ...apData, y: localY }]
       });
     }
   });
@@ -237,9 +256,9 @@ export const usePDFStore = create((set) => ({
     const newPages = [...state.pages];
     const page = { ...newPages[pageIdx] };
     const elements = [...page.textElements];
-
+    console.log(elements);
     const currentEl = elements[elIdx] || {};
-
+    console.log(currentEl);
     if (typeof updates === 'string') {
       elements[elIdx] = { ...currentEl, text: updates };
     } else {
@@ -251,7 +270,8 @@ export const usePDFStore = create((set) => ({
         elements[elIdx].isItalic = true;
       }
     }
-
+    console.log(elements[elIdx]);
+    console.log(elements);
     page.textElements = elements;
     newPages[pageIdx] = page;
     return { pages: newPages };
@@ -303,6 +323,92 @@ export const usePDFStore = create((set) => ({
     page.textElements = elements;
     newPages[pageIdx] = page;
     return { pages: newPages };
+  }),
+
+  /**
+   * Atomically splits a text element at charOffset (Enter key).
+   * Updates the current element's text, inserts the new line element,
+   * and shifts everything below — all in one state mutat   */
+  splitTextElement: (pageIdx, elIdx, textBefore, textAfter, lineHeight, measureFn) => set((state) => {
+    // Step 1: update current element only (new line NOT yet in the array)
+    const pages0 = [...state.pages];
+    const page0 = { ...pages0[pageIdx] };
+    const els0 = [...page0.textElements];
+    const currentEl = els0[elIdx];
+    if (!currentEl) return {};
+
+    els0[elIdx] = { ...currentEl, text: textBefore, width: measureFn(textBefore) };
+    page0.textElements = els0;
+    pages0[pageIdx] = page0;
+
+    // Step 2: shift all OLD elements below currentEl down by one lineHeight.
+    // The new line is NOT in pages0 yet, so it is NOT caught by this shift.
+    const pagesAfterShift = applyGlobalReflow(pages0, pageIdx, currentEl.y - 0.1, lineHeight);
+
+    // Step 3: insert the new line element at exactly currentEl.y - lineHeight.
+    // After the shift, currentEl.y is unchanged (it was above the threshold).
+    const pagesForInsert = [...pagesAfterShift];
+    const pageForInsert = { ...pagesForInsert[pageIdx] };
+    const elsForInsert = [...pageForInsert.textElements];
+    const elAfterShift = elsForInsert[elIdx];
+
+    const newLineEl = {
+      ...currentEl,
+      text: textAfter,
+      y: (elAfterShift?.y ?? currentEl.y) - lineHeight,
+      width: measureFn(textAfter),
+    };
+    delete newLineEl.flowY;
+
+    elsForInsert.splice(elIdx + 1, 0, newLineEl);
+    pageForInsert.textElements = elsForInsert;
+    pagesForInsert[pageIdx] = pageForInsert;
+
+    // Step 4: page-boundary normalisation with amount=0.
+    // No flowY shifts happen; only elements below their page margin are moved
+    // to the next page (e.g. the new line if it crossed the bottom margin).
+    return { pages: applyGlobalReflow(pagesForInsert, pageIdx, -1, 0) };
+  }),
+
+  /**
+   * Atomically wraps an overflowing line when typing causes width overflow.
+   * Same insert-after-shift pattern as splitTextElement.
+   */
+  wrapTextElement: (pageIdx, elIdx, firstLineText, secondLineText, lineHeight, measureFn) => set((state) => {
+    // Step 1: update current element (overflow line NOT yet in array)
+    const pages0 = [...state.pages];
+    const page0 = { ...pages0[pageIdx] };
+    const els0 = [...page0.textElements];
+    const currentEl = els0[elIdx];
+    if (!currentEl) return {};
+
+    els0[elIdx] = { ...currentEl, text: firstLineText, width: measureFn(firstLineText) };
+    page0.textElements = els0;
+    pages0[pageIdx] = page0;
+
+    // Step 2: shift old elements below (overflow line not present yet)
+    const pagesAfterShift = applyGlobalReflow(pages0, pageIdx, currentEl.y - 0.1, lineHeight);
+
+    // Step 3: insert overflow line after the shift
+    const pagesForInsert = [...pagesAfterShift];
+    const pageForInsert = { ...pagesForInsert[pageIdx] };
+    const elsForInsert = [...pageForInsert.textElements];
+    const elAfterShift = elsForInsert[elIdx];
+
+    const newLineEl = {
+      ...currentEl,
+      text: secondLineText,
+      y: (elAfterShift?.y ?? currentEl.y) - lineHeight,
+      width: measureFn(secondLineText),
+    };
+    delete newLineEl.flowY;
+
+    elsForInsert.splice(elIdx + 1, 0, newLineEl);
+    pageForInsert.textElements = elsForInsert;
+    pagesForInsert[pageIdx] = pageForInsert;
+
+    // Step 4: page-boundary normalisation only (amount=0)
+    return { pages: applyGlobalReflow(pagesForInsert, pageIdx, -1, 0) };
   }),
 
   removeTextElement: (pageIdx, elIdx) => set((state) => {
