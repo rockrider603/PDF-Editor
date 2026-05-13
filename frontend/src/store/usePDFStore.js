@@ -119,14 +119,22 @@ const applyGlobalReflow = (pages, startPageIdx, yThreshold, amount, skipFilter =
   const MARGIN = 48;
 
   // ── Per-element page placement ────────────────────────────────────────────
-  // Each element starts from its own fresh flowY, but is constrained to come
-  // AFTER the previous element ends (Word-like flow order).
-  // minGlobalY = prevFinalY + prevHeight ensures images on page 2 hold
-  // subsequent text to page 2. No drift because flowY is always fresh.
-  let minGlobalY = 0;
+  // Each element starts from its own fresh flowY (= BOTTOM globalY) but is
+  // constrained to come AFTER the previous element ends (Word-like flow order).
+  //
+  // Constraint: current.TOP ≥ prev.BOTTOM
+  //   current.TOP = current.flowY − current.height
+  //   ⇒ current.flowY ≥ prev.BOTTOM + current.height
+  //
+  // Earlier this used (prev.flowY + prev.height), which gave the same answer
+  // for uniform-height text but over-padded when prev was tall (e.g. an image).
+  // That caused upward shifts to leave a phantom gap of (image.height − text.height)
+  // below the image — visually the image moved up but the paragraph below it
+  // didn't follow.
+  let prevBottomGlobalY = 0;
 
   for (const item of allElements) {
-    let intendedGlobalY = Math.max(item.flowY, minGlobalY);
+    let intendedGlobalY = Math.max(item.flowY, prevBottomGlobalY + item.height);
 
     let { pageIdx, pOffset, nextOffset } = getPageInfo(intendedGlobalY);
     let pHeight = nextOffset - pOffset;
@@ -156,8 +164,9 @@ const applyGlobalReflow = (pages, startPageIdx, yThreshold, amount, skipFilter =
     }
 
     item.finalGlobalY = intendedGlobalY;
-    // Next element must start after this one ends (maintains flow order)
-    minGlobalY = intendedGlobalY + item.height;
+    // Track this element's BOTTOM so the next element's TOP can be ≥ it
+    // (next element's height is applied in the max() above, not here).
+    prevBottomGlobalY = intendedGlobalY;
   }
 
   // ── Rebuild pages from final positions ───────────────────────────────────
@@ -479,5 +488,133 @@ export const usePDFStore = create((set) => ({
     page.textElements = elements;
     newPages[pageIdx] = page;
     return { pages: newPages };
+  }),
+
+  /**
+   * Greedy paragraph compaction triggered by forward-delete.
+   *
+   * Walks downward from `startIdx` on `pageIdx`, pulling words from each
+   * line below into the line above, until either:
+   *   - the line above is full and the next line can't contribute a fitting
+   *     word (we then advance to that next line and keep trying), OR
+   *   - the next line is in a different paragraph (gap > 1.5 × fontSize OR
+   *     fontSize differs by > 1.5pt) — cascade stops here.
+   *
+   * Lines fully consumed are removed; remaining text elements + any images
+   * BELOW each removed line on the same page have their y bumped up by
+   * the removed line's lineHeight so the visual gap closes. A final
+   * applyGlobalReflow(amount=0) pass normalises page boundaries (anything
+   * that was held below the bottom margin can now lift / etc.).
+   *
+   * Caller passes `measureFn(text, el)` and `maxWidthFn(el)` so the store
+   * stays decoupled from the canvas measurement API.
+   */
+  cascadeCompactParagraph: (pageIdx, startIdx, measureFn, maxWidthFn) => set((state) => {
+    const initialPage = state.pages[pageIdx];
+    if (!initialPage) return {};
+
+    let elements = [...initialPage.textElements];
+    const removals = []; // { y, lineHeight }
+
+    let idx = startIdx;
+    while (idx + 1 < elements.length) {
+      const curEl = elements[idx];
+      const nextEl = elements[idx + 1];
+
+      const gap = curEl.y - nextEl.y;
+      const fontDiff = Math.abs((curEl.fontSize || 12) - (nextEl.fontSize || 12));
+      // Same-paragraph: nextEl directly below curEl (positive gap in PDF y),
+      // within 1.5 font-heights, similar font size.
+      if (!(gap > 0 && gap < (curEl.fontSize || 12) * 1.5 && fontDiff < 1.5)) {
+        break;
+      }
+
+      const curMaxWidth = maxWidthFn(curEl);
+      const nextWords = nextEl.text.split(' ').filter(w => w.length > 0);
+      let testText = curEl.text;
+      let pullCount = 0;
+
+      for (const word of nextWords) {
+        const candidate = testText + (testText.length > 0 ? ' ' : '') + word;
+        if (measureFn(candidate, curEl) <= curMaxWidth) {
+          testText = candidate;
+          pullCount++;
+        } else {
+          break;
+        }
+      }
+
+      if (pullCount === 0) {
+        // curEl is already at max width — advance to the next line and try
+        // pulling from the one after it.
+        idx++;
+        continue;
+      }
+
+      elements[idx] = {
+        ...curEl,
+        text: testText,
+        width: measureFn(testText, curEl),
+      };
+
+      const remainingWords = nextWords.slice(pullCount);
+      if (remainingWords.length > 0) {
+        const remText = remainingWords.join(' ');
+        elements[idx + 1] = {
+          ...nextEl,
+          text: remText,
+          width: measureFn(remText, nextEl),
+        };
+        idx++;
+      } else {
+        removals.push({ y: nextEl.y, lineHeight: (nextEl.fontSize || 12) * 1.2 });
+        elements.splice(idx + 1, 1);
+        // do NOT advance idx — the (new) elements[idx + 1] is what used to
+        // be two lines below; try pulling from it on the next iteration.
+      }
+    }
+
+    const newPages = [...state.pages];
+
+    if (removals.length === 0) {
+      newPages[pageIdx] = { ...newPages[pageIdx], textElements: elements };
+      return { pages: newPages };
+    }
+
+    // Shift y of remaining text elements + page images on THIS page that
+    // sat below any removed line, by the cumulative lineHeight of removals
+    // above them. PDF y is bottom-origin, so "shift up visually" = "increase y".
+    const shiftedElements = elements.map(el => {
+      let shiftUp = 0;
+      for (const r of removals) {
+        if (r.y > el.y) shiftUp += r.lineHeight;
+      }
+      return shiftUp > 0 ? { ...el, y: el.y + shiftUp } : el;
+    });
+
+    const updatedImages = (newPages[pageIdx].images?.pageImages ?? []).map(img => {
+      const ap = img.appearances?.[0];
+      if (!ap) return img;
+      let shiftUp = 0;
+      for (const r of removals) {
+        if (r.y > ap.y) shiftUp += r.lineHeight;
+      }
+      if (shiftUp === 0) return img;
+      return {
+        ...img,
+        appearances: [{ ...ap, y: ap.y + shiftUp }],
+      };
+    });
+
+    newPages[pageIdx] = {
+      ...newPages[pageIdx],
+      textElements: shiftedElements,
+      images: { ...newPages[pageIdx].images, pageImages: updatedImages },
+    };
+
+    // Page-boundary normalisation only — no flowY shift. Anything that
+    // hugged the bottom margin and now has room is lifted; same for
+    // anything that was forced to the next page and should come back.
+    return { pages: applyGlobalReflow(newPages, pageIdx, -1, 0) };
   }),
 }));

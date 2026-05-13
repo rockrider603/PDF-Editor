@@ -25,6 +25,7 @@ const PDFViewer = ({
   const removeTextElement = usePDFStore((state) => state.removeTextElement);
   const shiftElementsBelow = usePDFStore((state) => state.shiftElementsBelow);
   const shiftElementsAbove = usePDFStore((state) => state.shiftElementsAbove);
+  const cascadeCompactParagraph = usePDFStore((state) => state.cascadeCompactParagraph);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -202,6 +203,50 @@ const PDFViewer = ({
               charOffset: prevEl.text.length,
             }));
           }
+
+          prevent = true;
+          handledBySpecial = true;
+        }
+      } else if (e.key === 'Delete') {
+        // Forward delete. Caret NEVER moves — it stays at newOffset on the
+        // current element. Two cases, both delegate the actual reflow to
+        // cascadeCompactParagraph, which greedily pulls words from each
+        // lower line into the line above, stopping at the first paragraph
+        // boundary. Lines emptied by the pull are removed; remaining
+        // elements (text + images) below the removed lines on this page
+        // lift by lineHeight.
+        const maxWidthFn = (curEl) => (CANVAS_WIDTH - 40) / scale - curEl.x;
+
+        if (newOffset < newText.length) {
+          // Case A: delete char AT cursor on the current line, then cascade.
+          const updatedText = newText.slice(0, newOffset) + newText.slice(newOffset + 1);
+          const updateParams = {
+            text: updatedText,
+            width: measureTextWidthPoints(updatedText),
+          };
+          if (el.isBold) updateParams.isBold = true;
+          if (el.isItalic) updateParams.isItalic = true;
+          updateTextElement(activeCursor.pageIdx, activeCursor.elIdx, updateParams);
+
+          cascadeCompactParagraph(
+            activeCursor.pageIdx,
+            activeCursor.elIdx,
+            measureTextWidthPoints,
+            maxWidthFn
+          );
+
+          prevent = true;
+          handledBySpecial = true;
+        } else if (activeCursor.elIdx < page.textElements.length - 1) {
+          // Case B: at end-of-line — "delete the line break". Same cascade.
+          // If lines are in different paragraphs the cascade exits without
+          // changes and the caret silently stays put (no jump).
+          cascadeCompactParagraph(
+            activeCursor.pageIdx,
+            activeCursor.elIdx,
+            measureTextWidthPoints,
+            maxWidthFn
+          );
 
           prevent = true;
           handledBySpecial = true;
