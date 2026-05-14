@@ -1,14 +1,37 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { Loader2 } from "lucide-react";
 import { CANVAS_WIDTH } from "./pdfConstants";
+import { layoutObjects } from "../lib/layoutObjects";
 
-// Visual gap inserted between pages on the tall canvas.
-const PAGE_SEPARATOR_PX = 32;
+// Three-layer architecture:
+//   Layer 1  Document model — `objects[]` (React state, mirrored from props)
+//   Layer 2  Layout         — pure function, useMemo'd over the model
+//   Layer 3  Render + edits — imperative DOM sync + keyboard handlers
+//
+// Reflow is derived, not triggered: layout is a useMemo over the model.
+//
+// Why imperative text sync (instead of `{block.text}` as children):
+//   contenteditable lets the browser mutate textContent on every keystroke.
+//   If React also writes to that text node on the next re-render, the browser
+//   typically resets the caret. We side-step this by rendering an empty
+//   contenteditable and writing textContent in a layout effect ONLY when the
+//   user isn't currently typing in that block (tracked via pendingText).
+//
+// Why two-press merge:
+//   Backspace at offset 0 immediately merging surprises users who just
+//   deleted the first character — caret arrives at 0 by accident and the
+//   next press wipes a paragraph. We require two CONSECUTIVE Backspace
+//   presses at offset 0 (any other key/click/move disarms) before merging.
 
-const DEFAULT_PAGE_WIDTH = 612;
-const DEFAULT_PAGE_HEIGHT = 792;
-
-// Object types that hold editable text (everything but images).
+const DEFAULT_PAGE_WIDTH_PT = 612;
+const TYPING_DEBOUNCE_MS = 150;
 const TEXT_TYPES = new Set(["paragraph", "header", "line"]);
 
 const SinglePageView = ({
@@ -16,33 +39,136 @@ const SinglePageView = ({
   objects: incomingObjects = [],
   isLoading = false,
 }) => {
-  const containerRef = useRef(null);
-
-  // Local mirror of the unified object stream. Backspace-merge and onBlur
-  // text edits mutate this, the parent's pages[] stays untouched (Phase 1).
+  // ── Layer 1: model ────────────────────────────────────────────────────────
   const [objects, setObjects] = useState(incomingObjects);
   useEffect(() => {
     setObjects(incomingObjects);
   }, [incomingObjects]);
 
-  // refs to each rendered editable block, keyed by current array index.
-  const blockRefs = useRef([]);
-  blockRefs.current = [];
-  const registerRef = (i) => (el) => {
-    blockRefs.current[i] = el;
-  };
+  // ── Refs (non-render state) ───────────────────────────────────────────────
+  const idCounter = useRef(0);
+  const measureCanvasRef = useRef(null);
+  const measureCtxRef = useRef(null);
+  const measureCacheRef = useRef(new Map());
+  const pendingTextRef = useRef(new Map());
+  const pendingTimerRef = useRef(null);
+  const blockRefs = useRef(new Map());
+  const caretIntentRef = useRef(null);
+  // DOM-truth heights, written by ResizeObserver, read by layoutObjects.
+  // We hold it in a ref + force a render via `heightTick` so we never have
+  // to allocate a new Map on every observer fire.
+  const measuredHeightsRef = useRef(new Map());
+  const [heightTick, bumpHeightTick] = useReducer((n) => n + 1, 0);
+  const resizeObserverRef = useRef(null);
+  // 2-press-to-merge: armed when a Backspace at offset 0 has been seen and
+  // no other input has happened since. Disarmed by any other key, click, or
+  // a Backspace fired at offset > 0.
+  const mergeArmedRef = useRef(false);
 
-  // Place the caret in `el` at character `pos` from the start of its text.
+  // Init the off-screen 2D context once.
+  useEffect(() => {
+    if (measureCtxRef.current) return;
+    const canvas =
+      typeof OffscreenCanvas !== "undefined"
+        ? new OffscreenCanvas(1, 1)
+        : document.createElement("canvas");
+    measureCanvasRef.current = canvas;
+    measureCtxRef.current = canvas.getContext("2d");
+  }, []);
+
+  // Clear measurement cache when the document changes.
+  useEffect(() => {
+    measureCacheRef.current.clear();
+  }, [incomingObjects]);
+
+  // Cleanup debounce on unmount.
+  useEffect(
+    () => () => {
+      if (pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
+    },
+    []
+  );
+
+  // Disarm merge on any mousedown anywhere — the caret may have just moved.
+  useEffect(() => {
+    const onDown = () => {
+      mergeArmedRef.current = false;
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
+
+  // One shared ResizeObserver for every editable block. Fires whenever the
+  // browser's actual rendered height of a block changes — i.e. on every
+  // wrap-point shift while typing, on Backspace deletions, on column-width
+  // changes. We compare against the previous reported height and only force
+  // a re-render when at least one block actually changed size.
+  if (!resizeObserverRef.current && typeof ResizeObserver !== "undefined") {
+    resizeObserverRef.current = new ResizeObserver((entries) => {
+      let changed = false;
+      for (const entry of entries) {
+        const id = entry.target.dataset.id;
+        if (!id) continue;
+        // contentRect.height excludes borders/padding; matches how the
+        // layout cursor treats heights.
+        const h = entry.contentRect.height;
+        const prev = measuredHeightsRef.current.get(id);
+        if (prev === undefined || Math.abs(prev - h) > 0.5) {
+          measuredHeightsRef.current.set(id, h);
+          changed = true;
+        }
+      }
+      if (changed) bumpHeightTick();
+    });
+  }
+
+  useEffect(
+    () => () => {
+      resizeObserverRef.current?.disconnect();
+    },
+    []
+  );
+
+  // ── Layer 2: scale + layout (memoized) ────────────────────────────────────
+  const pageWidthsByIdx = useMemo(
+    () => pages.map((p) => p?.dimensions?.width ?? DEFAULT_PAGE_WIDTH_PT),
+    [pages]
+  );
+
+  const scale = useMemo(() => {
+    const maxW = pageWidthsByIdx.reduce(
+      (m, w) => Math.max(m, w),
+      DEFAULT_PAGE_WIDTH_PT
+    );
+    return CANVAS_WIDTH / maxW;
+  }, [pageWidthsByIdx]);
+
+  const { layout, separators, totalHeight } = useMemo(
+    () =>
+      layoutObjects({
+        objects,
+        scale,
+        pageWidthsByIdx,
+        measureCtx: measureCtxRef.current,
+        measureCache: measureCacheRef.current,
+        measuredHeights: measuredHeightsRef.current,
+      }),
+    // heightTick is the dep that fires when ResizeObserver wrote to
+    // measuredHeightsRef. We can't depend on the Map itself (identity is
+    // stable) so the tick is the trigger.
+    [objects, scale, pageWidthsByIdx, heightTick]
+  );
+
+  // ── Caret helpers ─────────────────────────────────────────────────────────
   const placeCaret = (el, pos) => {
     if (!el) return;
     el.focus();
     const sel = window.getSelection();
     if (!sel) return;
     const range = document.createRange();
-    const node = el.firstChild || el;
-    const len = node.nodeType === Node.TEXT_NODE ? node.data.length : 0;
-    const offset = Math.max(0, Math.min(pos, len));
-    if (node.nodeType === Node.TEXT_NODE) {
+    const node = el.firstChild;
+    if (node && node.nodeType === Node.TEXT_NODE) {
+      const offset = Math.max(0, Math.min(pos, node.data.length));
       range.setStart(node, offset);
     } else {
       range.setStart(el, 0);
@@ -52,9 +178,6 @@ const SinglePageView = ({
     sel.addRange(range);
   };
 
-  // True if the editing caret is at the very start of `el`'s text.
-  // Survives multi-text-node contents by walking up from the caret and
-  // checking that nothing precedes it inside the block.
   const caretAtStart = (el) => {
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return false;
@@ -69,115 +192,171 @@ const SinglePageView = ({
     return !!node;
   };
 
-  // Backspace at offset 0 → merge this block's text into the previous
-  // editable block on the same page. Cross-page merges are skipped
-  // (matches the original keyboard handler's behaviour).
-  const handleKeyDown = (e, idx) => {
-    if (e.key !== "Backspace") return;
-    const target = e.currentTarget;
-    if (!caretAtStart(target)) return;
+  const getCaretCharOffset = (el) => {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return 0;
+    const live = sel.getRangeAt(0);
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    r.setEnd(live.startContainer, live.startOffset);
+    return r.toString().length;
+  };
 
-    // Walk backwards to find the previous text-type block on this page.
-    const cur = objects[idx];
-    let prevIdx = -1;
-    for (let j = idx - 1; j >= 0; j--) {
-      const o = objects[j];
-      if (!TEXT_TYPES.has(o.type)) continue;
-      if (o.pageIdx !== cur.pageIdx) break;
-      prevIdx = j;
-      break;
+  // Apply caret placement after commit (layout effect = before paint).
+  useLayoutEffect(() => {
+    const intent = caretIntentRef.current;
+    if (!intent) return;
+    const el = blockRefs.current.get(intent.id);
+    if (el) placeCaret(el, intent.offset);
+    caretIntentRef.current = null;
+  });
+
+  // ── Typing debounce ───────────────────────────────────────────────────────
+  const flushPending = () => {
+    if (pendingTimerRef.current) {
+      clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = null;
     }
+    const pending = pendingTextRef.current;
+    if (pending.size === 0) return;
+    const snapshot = new Map(pending);
+    pending.clear();
+    setObjects((prev) => {
+      let changed = false;
+      const next = prev.map((b) => {
+        if (snapshot.has(b.id) && snapshot.get(b.id) !== b.text) {
+          changed = true;
+          return { ...b, text: snapshot.get(b.id) };
+        }
+        return b;
+      });
+      return changed ? next : prev;
+    });
+  };
+
+  const handleInput = (e, id) => {
+    const text = e.currentTarget.textContent;
+    pendingTextRef.current.set(id, text);
+    // Any input disarms the 2-press merge.
+    mergeArmedRef.current = false;
+    if (pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
+    pendingTimerRef.current = setTimeout(flushPending, TYPING_DEBOUNCE_MS);
+  };
+
+  // ── Structural edits ──────────────────────────────────────────────────────
+  const walkBackForTextBlock = (fromIdx) => {
+    for (let i = fromIdx - 1; i >= 0; i--) {
+      if (TEXT_TYPES.has(objects[i].type)) return i;
+    }
+    return -1;
+  };
+
+  const handleBackspaceAtStart = (curIdx) => {
+    const prevIdx = walkBackForTextBlock(curIdx);
     if (prevIdx < 0) return;
 
-    e.preventDefault();
+    const cur = objects[curIdx];
+    const prev = objects[prevIdx];
 
-    // Read current live texts in case the user typed without blurring yet.
-    const liveCurText = target.textContent;
-    const prevEl = blockRefs.current[prevIdx];
-    const livePrevText = prevEl ? prevEl.textContent : objects[prevIdx].text;
-    const prevLen = livePrevText.length;
-    const merged =
-      livePrevText.length > 0 && liveCurText.length > 0
-        ? livePrevText + " " + liveCurText
-        : livePrevText + liveCurText;
+    const curEl = blockRefs.current.get(cur.id);
+    const prevEl = blockRefs.current.get(prev.id);
+    const curText = curEl ? curEl.textContent : cur.text;
+    const prevText = prevEl ? prevEl.textContent : prev.text;
+    const gap = prevText.length > 0 && curText.length > 0 ? " " : "";
+    const merged = prevText + gap + curText;
+    const seamOffset = prevText.length + gap.length;
+
+    pendingTextRef.current.delete(cur.id);
+    pendingTextRef.current.delete(prev.id);
 
     setObjects((arr) => {
       const next = arr.slice();
       next[prevIdx] = { ...next[prevIdx], text: merged };
-      next.splice(idx, 1);
+      next.splice(curIdx, 1);
       return next;
     });
 
-    // After re-render, drop caret at the seam (end of original prev text).
-    requestAnimationFrame(() => {
-      placeCaret(
-        blockRefs.current[prevIdx],
-        livePrevText.length > 0 && liveCurText.length > 0
-          ? prevLen + 1
-          : prevLen
-      );
-    });
+    caretIntentRef.current = { id: prev.id, offset: seamOffset };
+    mergeArmedRef.current = false;
   };
 
-  // Persist live edits when a block loses focus, so subsequent merges
-  // pick up the latest text instead of the stale prop value.
-  const handleBlur = (e, idx) => {
-    const text = e.currentTarget.textContent;
+  const handleEnterSplit = (curIdx, el) => {
+    const cur = objects[curIdx];
+    if (!TEXT_TYPES.has(cur.type)) return;
+
+    const offset = getCaretCharOffset(el);
+    const text = el.textContent;
+    const before = text.slice(0, offset);
+    const after = text.slice(offset).replace(/^\s+/, "");
+
+    const newId = `n${idCounter.current++}`;
+    pendingTextRef.current.delete(cur.id);
+
     setObjects((arr) => {
-      if (arr[idx]?.text === text) return arr;
       const next = arr.slice();
-      next[idx] = { ...next[idx], text };
+      next[curIdx] = { ...next[curIdx], text: before };
+      next.splice(curIdx + 1, 0, {
+        id: newId,
+        type: "paragraph",
+        pageIdx: cur.pageIdx,
+        text: after,
+        x: cur.x,
+        fontSize: cur.fontSize,
+        lines: [],
+        isBold: !!cur.isBold,
+        isItalic: !!cur.isItalic,
+        color: cur.color ?? null,
+      });
       return next;
     });
+
+    caretIntentRef.current = { id: newId, offset: 0 };
+    mergeArmedRef.current = false;
   };
 
-  // Pick a single scale for the whole document so the canvas has one width.
-  // Scale to the widest page; narrower pages just sit centred-by-x in PDF space.
-  const maxPageWidth = useMemo(
-    () =>
-      Math.max(
-        DEFAULT_PAGE_WIDTH,
-        ...pages.map((p) => p?.dimensions?.width ?? DEFAULT_PAGE_WIDTH)
-      ),
-    [pages]
-  );
-  const scale = CANVAS_WIDTH / maxPageWidth;
+  const handleKeyDown = (e, id) => {
+    if (e.key === "Backspace") {
+      const el = e.currentTarget;
+      if (!caretAtStart(el)) {
+        // In-paragraph backspace: let the browser delete a char.
+        // Disarm merge so a subsequent "fresh-at-zero" press doesn't merge.
+        mergeArmedRef.current = false;
+        return;
+      }
 
-  // Cumulative CSS top for the top edge of each page (after separators).
-  const pageCssTops = useMemo(() => {
-    const tops = [];
-    let cum = 0;
-    pages.forEach((p) => {
-      tops.push(cum);
-      const pHeight = p?.dimensions?.height ?? DEFAULT_PAGE_HEIGHT;
-      cum += pHeight * scale + PAGE_SEPARATOR_PX;
-    });
-    return tops;
-  }, [pages, scale]);
+      e.preventDefault();
+      if (!mergeArmedRef.current) {
+        // First Backspace at offset 0 in this idle period — arm only, no merge.
+        mergeArmedRef.current = true;
+        return;
+      }
 
-  const totalHeight = useMemo(() => {
-    if (pages.length === 0) return 0;
-    const lastIdx = pages.length - 1;
-    const lastHeight =
-      (pages[lastIdx]?.dimensions?.height ?? DEFAULT_PAGE_HEIGHT) * scale;
-    return pageCssTops[lastIdx] + lastHeight;
-  }, [pages, pageCssTops, scale]);
+      // Second consecutive Backspace at offset 0 — merge.
+      flushPending();
+      const idx = objects.findIndex((b) => b.id === id);
+      if (idx >= 0) handleBackspaceAtStart(idx);
+      return;
+    }
 
-  // Convert an object's globalTopY (in cumulative PDF points, no separators)
-  // into a CSS pixel position on the tall canvas (with separators).
-  const toCanvasTop = (obj) => {
-    const pageIdx = obj.pageIdx ?? 0;
-    const pageTopPdf = pages
-      .slice(0, pageIdx)
-      .reduce(
-        (acc, p) => acc + (p?.dimensions?.height ?? DEFAULT_PAGE_HEIGHT),
-        0
-      );
-    const offsetWithinPagePdf = obj.globalTopY - pageTopPdf;
-    return pageCssTops[pageIdx] + offsetWithinPagePdf * scale;
+    // Any other key disarms merge.
+    if (e.key !== "Shift" && e.key !== "Control" && e.key !== "Alt" && e.key !== "Meta") {
+      mergeArmedRef.current = false;
+    }
+
+    if (e.key === "Enter") {
+      e.preventDefault();
+      flushPending();
+      const idx = objects.findIndex((b) => b.id === id);
+      if (idx >= 0) handleEnterSplit(idx, e.currentTarget);
+    }
   };
 
-  // ── Loading / empty states ───────────────────────────────────────────────
+  const setBlockRef = (id) => (el) => {
+    if (el) blockRefs.current.set(id, el);
+    else blockRefs.current.delete(id);
+  };
+
+  // ── Loading / empty states ────────────────────────────────────────────────
   if (isLoading) {
     return (
       <div
@@ -201,6 +380,7 @@ const SinglePageView = ({
     );
   }
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div
       id="pdf-scroll-container"
@@ -213,7 +393,6 @@ const SinglePageView = ({
       }}
     >
       <div
-        ref={containerRef}
         id="pdf-single-canvas"
         style={{
           position: "relative",
@@ -223,74 +402,63 @@ const SinglePageView = ({
           boxShadow: "0 10px 25px rgba(0,0,0,0.08)",
           border: "1px solid #e5e7eb",
           borderRadius: 8,
-          overflow: "hidden",
         }}
       >
-        {/* ── Page separators (between consecutive pages) ───────────── */}
-        {pages.slice(0, -1).map((_, pageIdx) => {
-          const sepTop =
-            pageCssTops[pageIdx] +
-            (pages[pageIdx]?.dimensions?.height ?? DEFAULT_PAGE_HEIGHT) *
-              scale;
-          return (
+        {separators.map((sep, i) => (
+          <div
+            key={`sep-${i}`}
+            style={{
+              position: "absolute",
+              left: 0,
+              right: 0,
+              top: sep.top,
+              height: 32,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              pointerEvents: "none",
+              background:
+                "repeating-linear-gradient(90deg, #d1d5db 0 6px, transparent 6px 12px)",
+              backgroundSize: "12px 1px",
+              backgroundRepeat: "no-repeat",
+              backgroundPosition: "center",
+            }}
+          >
             <div
-              key={`sep-${pageIdx}`}
               style={{
-                position: "absolute",
-                left: 0,
-                right: 0,
-                top: sepTop,
-                height: PAGE_SEPARATOR_PX,
-                background:
-                  "repeating-linear-gradient(90deg, #d1d5db 0 6px, transparent 6px 12px)",
-                backgroundSize: "12px 1px",
-                backgroundRepeat: "no-repeat",
-                backgroundPosition: "center",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                pointerEvents: "none",
+                background: "#9ca3af",
+                color: "white",
+                fontSize: 11,
+                padding: "2px 10px",
+                borderRadius: 999,
+                letterSpacing: 0.5,
               }}
             >
-              <div
-                style={{
-                  background: "#9ca3af",
-                  color: "white",
-                  fontSize: 11,
-                  padding: "2px 10px",
-                  borderRadius: 999,
-                  letterSpacing: 0.5,
-                }}
-              >
-                Page {pageIdx + 1} / {pageIdx + 2}
-              </div>
+              Page {sep.fromPage + 1} / {sep.toPage + 1}
             </div>
-          );
-        })}
+          </div>
+        ))}
 
-        {/* ── Objects (z-order: images < text) ──────────────────────── */}
-        {objects.map((obj, i) => {
-          const cssTop = toCanvasTop(obj);
+        {objects.map((block) => {
+          const rect = layout.get(block.id);
+          if (!rect) return null;
 
-          if (obj.type === "image") {
-            const cssLeft = obj.x * scale;
-            const cssW = obj.renderedWidth * scale;
-            const cssH = obj.renderedHeight * scale;
-            const isBackground = obj.role === "background";
+          if (block.type === "image") {
+            const isBg = block.role === "background";
             return (
               <img
-                key={`obj-${i}`}
-                src={obj.dataUrl}
-                alt={isBackground ? "PDF background" : "PDF image"}
+                key={`img-${block.id}`}
+                src={block.dataUrl}
+                alt={isBg ? "PDF background" : "PDF image"}
                 style={{
                   position: "absolute",
-                  left: cssLeft,
-                  top: cssTop,
-                  width: cssW,
-                  height: cssH,
-                  zIndex: isBackground ? 0 : 1,
-                  objectFit: isBackground ? "fill" : "contain",
-                  pointerEvents: isBackground ? "none" : "auto",
+                  left: rect.left,
+                  top: rect.top,
+                  width: rect.width,
+                  height: rect.height,
+                  zIndex: isBg ? 0 : 1,
+                  objectFit: isBg ? "fill" : "contain",
+                  pointerEvents: isBg ? "none" : "auto",
                   userSelect: "none",
                 }}
                 draggable={false}
@@ -298,89 +466,111 @@ const SinglePageView = ({
             );
           }
 
-          if (obj.type === "paragraph") {
-            const cssLeft = obj.x * scale;
-            // Column width = from x to right margin of widest page
-            // (paragraph.width is only the longest line, which clips wrap)
-            const pageWidth =
-              pages[obj.pageIdx]?.dimensions?.width ?? DEFAULT_PAGE_WIDTH;
-            const rightMargin = 48; // PDF points
-            const colWidthPdf = Math.max(
-              obj.width || 0,
-              pageWidth - obj.x - rightMargin
-            );
-            const cssW = colWidthPdf * scale;
-            const fontPx = (obj.fontSize ?? 12) * scale;
-            const lineCount = obj.lines?.length || 1;
-            // Reserve vertical space for the wrapped paragraph so it
-            // doesn't overlap whatever object follows it.
-            const reservedHeight = fontPx * 1.2 * lineCount;
-            return (
-              <div
-                key={`para-${obj.id}`}
-                ref={registerRef(i)}
-                data-object-type="paragraph"
-                data-paragraph-id={obj.id}
-                contentEditable
-                suppressContentEditableWarning
-                onKeyDown={(e) => handleKeyDown(e, i)}
-                onBlur={(e) => handleBlur(e, i)}
-                style={{
-                  position: "absolute",
-                  left: cssLeft,
-                  top: cssTop,
-                  width: cssW,
-                  minHeight: reservedHeight,
-                  fontSize: fontPx,
-                  fontFamily: "serif",
-                  lineHeight: 1.2,
-                  color: "#1f2937",
-                  background: "#ffffff",
-                  outline: "none",
-                  whiteSpace: "pre-wrap",
-                  wordWrap: "break-word",
-                  zIndex: 2,
-                }}
-              >
-                {obj.text}
-              </div>
-            );
-          }
-
-          // header / line
-          const cssLeft = obj.x * scale;
-          const fontPx = (obj.fontSize ?? 12) * scale;
-          const isHeader = obj.type === "header";
           return (
-            <div
-              key={`txt-${obj.pageIdx}-${obj.x}-${obj.y}`}
-              ref={registerRef(i)}
-              data-object-type={obj.type}
-              contentEditable
-              suppressContentEditableWarning
-              onKeyDown={(e) => handleKeyDown(e, i)}
-              onBlur={(e) => handleBlur(e, i)}
-              style={{
-                position: "absolute",
-                left: cssLeft,
-                top: cssTop,
-                fontSize: fontPx,
-                fontFamily: "serif",
-                fontWeight: isHeader || obj.isBold ? "bold" : "normal",
-                fontStyle: obj.isItalic ? "italic" : "normal",
-                color: obj.color || (isHeader ? "#111827" : "#1f2937"),
-                lineHeight: 1.2,
-                whiteSpace: "nowrap",
-                outline: "none",
-                zIndex: 2,
-              }}
-            >
-              {obj.text}
-            </div>
+            <EditableBlock
+              key={`blk-${block.id}`}
+              block={block}
+              rect={rect}
+              scale={scale}
+              pendingTextRef={pendingTextRef}
+              registerRef={setBlockRef(block.id)}
+              onInput={handleInput}
+              onKeyDown={handleKeyDown}
+              resizeObserver={resizeObserverRef.current}
+              measuredHeightsRef={measuredHeightsRef}
+            />
           );
         })}
       </div>
     </div>
+  );
+};
+
+// One editable text block. The contenteditable's textContent is owned
+// imperatively: React does NOT pass `{block.text}` as children, otherwise
+// every model update would clobber the live DOM and reset the caret.
+//
+// Sync rules (in `useLayoutEffect`):
+//   1. While user is typing in this block (pendingTextRef has this id),
+//      do nothing. The browser owns textContent.
+//   2. Otherwise, if DOM textContent differs from model text, write the
+//      model text. This fires after merge / split / external updates.
+const EditableBlock = ({
+  block,
+  rect,
+  scale,
+  pendingTextRef,
+  registerRef,
+  onInput,
+  onKeyDown,
+  resizeObserver,
+  measuredHeightsRef,
+}) => {
+  const divRef = useRef(null);
+
+  // Imperative text sync. Skipped while the user is mid-type in this block;
+  // otherwise writes the model text into the DOM when it differs.
+  useLayoutEffect(() => {
+    const el = divRef.current;
+    if (!el) return;
+    if (pendingTextRef.current.has(block.id)) return;
+    if (el.textContent !== (block.text ?? "")) {
+      el.textContent = block.text ?? "";
+    }
+  }, [block.text, block.id, pendingTextRef]);
+
+  // Observe this block's rendered height. The shared observer in
+  // SinglePageView reads data-id off the element and updates the
+  // measuredHeights map. On unmount, drop the entry so a future block
+  // reusing the id doesn't read stale height.
+  useEffect(() => {
+    const el = divRef.current;
+    if (!el || !resizeObserver) return;
+    resizeObserver.observe(el);
+    return () => {
+      resizeObserver.unobserve(el);
+      measuredHeightsRef?.current?.delete(block.id);
+    };
+  }, [resizeObserver, measuredHeightsRef, block.id]);
+
+  const handleRef = (el) => {
+    divRef.current = el;
+    registerRef(el);
+  };
+
+  const isHeader = block.type === "header";
+  const fontPx = (block.fontSize ?? 12) * scale;
+
+  return (
+    <div
+      ref={handleRef}
+      data-id={block.id}
+      data-type={block.type}
+      contentEditable
+      suppressContentEditableWarning
+      onInput={(e) => onInput(e, block.id)}
+      onKeyDown={(e) => onKeyDown(e, block.id)}
+      style={{
+        position: "absolute",
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        // No height/minHeight — let the browser size the box from its
+        // wrapped content. ResizeObserver reports the result back into
+        // measuredHeights, which the next layout pass consumes.
+        fontSize: fontPx,
+        fontFamily: "serif",
+        lineHeight: 1.2,
+        fontWeight: isHeader || block.isBold ? "bold" : "normal",
+        fontStyle: block.isItalic ? "italic" : "normal",
+        color: block.color || (isHeader ? "#111827" : "#1f2937"),
+        background: "transparent",
+        outline: "none",
+        whiteSpace: "pre-wrap",
+        wordWrap: "break-word",
+        zIndex: 2,
+      }}
+    />
   );
 };
 

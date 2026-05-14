@@ -1,18 +1,31 @@
-// Flattens parsed pages[] into a unified objects[] stream for the
-// single-page-view rendering pipeline.
+// Flattens parsed pages[] into a unified objects[] stream — the document
+// model consumed by SinglePageView.
 //
-// Object shapes:
-//   { type: 'image',     pageIdx, dataUrl, x, y, renderedWidth, renderedHeight, role, globalTopY }
-//   { type: 'paragraph', id, pageIdx, text, x, y, width, fontSize, lines[], globalTopY }
-//   { type: 'header',    pageIdx, text, x, y, fontSize, globalTopY }
-//   { type: 'line',      pageIdx, text, x, y, fontSize, globalTopY }   // orphan body lines
+// IMPORTANT: this output is the *model*, not a layout. Positions in CSS pixels
+// are computed downstream by layoutObjects() (frontend/src/lib/layoutObjects.js).
+// Blocks carry only their identity, content, and original PDF coordinates;
+// they carry no canvas-space y, height, or wrap geometry.
 //
-// Paragraph ids are assigned globally, starting at 0 in reading order
-// (top of page 0 first), incrementing across pages.
+// Block shapes:
+//   paragraph:
+//     { id: number, type:'paragraph', pageIdx, text, x, fontSize, lines[],
+//       isBold, isItalic, color }
 //
-// `globalTopY` is the CSS-space TOP coordinate (in PDF points, not scaled)
-// measured from the top of the *concatenated* document. It does NOT include
-// inter-page separator padding — the view layer adds that.
+//   header / line (orphan body line outside any detected paragraph):
+//     { id: string, type:'header'|'line', pageIdx, text, x, fontSize,
+//       isBold, isItalic, color }
+//
+//   image:
+//     { id: string, type:'image', pageIdx, dataUrl, role:'background'|'image',
+//       x, y, renderedWidth, renderedHeight, pageHeight }
+//     x/y/renderedWidth/renderedHeight are PDF user-space points (bottom-left
+//     origin). pageHeight is needed for the page-relative anchor formula in
+//     the layout pass.
+//
+// Paragraph ids are globally incrementing numbers starting at 0, in document
+// reading order, so the console log keeps the {id:0, id:1, …} shape that
+// was originally specified. Header/line/image ids are strings so they cannot
+// collide with paragraph numerics.
 
 const DEFAULT_PAGE_WIDTH = 612;
 const DEFAULT_PAGE_HEIGHT = 792;
@@ -21,19 +34,9 @@ export function buildObjects(pages = []) {
   const objects = [];
   let paragraphId = 0;
 
-  // Pre-compute global y offsets (top of each page in pure PDF points,
-  // stacking pages without any separator gap).
-  const pageOffsets = [];
-  let cumulative = 0;
-  for (const p of pages) {
-    pageOffsets.push(cumulative);
-    cumulative += p?.dimensions?.height ?? DEFAULT_PAGE_HEIGHT;
-  }
-
   pages.forEach((page, pageIdx) => {
     const pageHeight = page?.dimensions?.height ?? DEFAULT_PAGE_HEIGHT;
     const pageWidth = page?.dimensions?.width ?? DEFAULT_PAGE_WIDTH;
-    const pageOffset = pageOffsets[pageIdx];
 
     const pageObjects = [];
 
@@ -41,24 +44,28 @@ export function buildObjects(pages = []) {
     const bg = page?.images?.background;
     if (bg?.dataUrl) {
       pageObjects.push({
+        id: `img-${pageIdx}-bg`,
         type: 'image',
         pageIdx,
         dataUrl: bg.dataUrl,
         role: 'background',
         x: 0,
-        y: 0,                                  // PDF coords, bottom-left
+        y: 0,
         renderedWidth: pageWidth,
         renderedHeight: pageHeight,
-        // bottom-left → CSS top in global space
-        globalTopY: pageOffset + 0,
+        pageHeight,
+        // synthetic globalTopY used only for the document-order sort below;
+        // never reaches the rendered output.
+        _sortY: 0,
       });
     }
 
-    for (const img of page?.images?.pageImages ?? []) {
+    (page?.images?.pageImages ?? []).forEach((img, imgIdx) => {
       const ap = img.appearances?.[0];
-      if (!ap) continue;
+      if (!ap) return;
       const topYInPage = pageHeight - ap.y - ap.renderedHeight;
       pageObjects.push({
+        id: `img-${pageIdx}-${img.objNum ?? imgIdx}`,
         type: 'image',
         pageIdx,
         dataUrl: img.dataUrl,
@@ -67,105 +74,132 @@ export function buildObjects(pages = []) {
         y: ap.y,
         renderedWidth: ap.renderedWidth,
         renderedHeight: ap.renderedHeight,
-        globalTopY: pageOffset + topYInPage,
+        pageHeight,
+        _sortY: topYInPage,
       });
-    }
+    });
 
-    // ── Text: paragraphs + headers + orphan lines ─────────────────────
+    // ── Text: paragraphs (spacing-grouped) + headers ──────────────────
+    //
+    // We intentionally IGNORE the SDK's paragraph classification because
+    // its short-line / indented-start / hanging-indent rules fire wildly
+    // on non-justified text, fragmenting one visual paragraph into many
+    // single-line blocks. We re-group from scratch using the only rule
+    // that's actually reliable: vertical spacing between lines.
+    //
+    // Rule (spacing-only): the gap between consecutive lines is the
+    // distance from the top of one line to the top of the next, measured
+    // along PDF y. While that gap is small (~one line-height), the lines
+    // belong to the same paragraph. When it exceeds the threshold
+    // PARA_BREAK_FACTOR × fontSize, a new paragraph starts. We also
+    // break on a meaningful font-size change so headings or footnotes
+    // don't get glued to body text.
     const textElements = page?.textElements ?? [];
     const classification = page?.classification ?? null;
-    const paragraphsMap = classification?.detailed?.paragraphs ?? null;
     const headerTexts = new Set(classification?.headers ?? []);
 
-    // Build lookup: textElement index → paragraph block (from this page).
-    const elIdxToParaBlock = new Map();
-    if (paragraphsMap) {
-      paragraphsMap.forEach((para) => {
-        for (const line of para.lines) {
-          const idx = textElements.findIndex(
-            (el) =>
-              el.x === line.x && el.y === line.y && el.text === line.text
-          );
-          if (idx !== -1) elIdxToParaBlock.set(idx, para);
-        }
-      });
-    }
+    const PARA_BREAK_FACTOR = 1.6; // gap > 1.6 × fontSize ⇒ new paragraph
+    const FONT_SIZE_TOLERANCE = 1.5; // pt
 
-    // Emit each paragraph at most once, when we first encounter one of
-    // its lines (preserves document reading order across header / para /
-    // orphan-line interleaving).
-    const emittedParaBlockIds = new Set();
-
-    textElements.forEach((el, idx) => {
-      const paraBlock = elIdxToParaBlock.get(idx);
-      if (paraBlock) {
-        if (emittedParaBlockIds.has(paraBlock.id)) return;
-        emittedParaBlockIds.add(paraBlock.id);
-
-        const topYInPage =
-          pageHeight - paraBlock.y - (paraBlock.fontSize ?? 12) * 0.8;
-        pageObjects.push({
-          type: 'paragraph',
-          id: paragraphId++,
-          pageIdx,
-          text: paraBlock.text,
-          x: paraBlock.x,
-          y: paraBlock.y,
-          width: paraBlock.width,
-          fontSize: paraBlock.fontSize ?? 12,
-          lines: paraBlock.lines.map((l) => ({
-            text: l.text,
-            x: l.x,
-            y: l.y,
-            fontSize: l.fontSize ?? 12,
-            isBold: !!l.isBold,
-            isItalic: !!l.isItalic,
-            color: l.color ?? null,
-          })),
-          globalTopY: pageOffset + topYInPage,
-        });
-        return;
-      }
-
-      // Not part of any paragraph → header or orphan line.
+    // Partition body vs header up front (headers are emitted as their own
+    // blocks regardless of spacing).
+    const headers = [];
+    const bodyLines = [];
+    textElements.forEach((el, elIdx) => {
       const isHeader = el.isHeader || headerTexts.has(el.text);
+      if (isHeader) headers.push({ el, elIdx });
+      else bodyLines.push({ el, elIdx });
+    });
+
+    // Emit headers.
+    for (const { el, elIdx } of headers) {
       const ascent = (el.fontSize ?? 12) * 0.8;
       const topYInPage = pageHeight - el.y - ascent;
       pageObjects.push({
-        type: isHeader ? 'header' : 'line',
+        id: `t-${pageIdx}-${elIdx}`,
+        type: 'header',
         pageIdx,
         text: el.text,
         x: el.x,
-        y: el.y,
         fontSize: el.fontSize ?? 12,
         isBold: !!el.isBold,
         isItalic: !!el.isItalic,
         color: el.color ?? null,
-        globalTopY: pageOffset + topYInPage,
+        _sortY: topYInPage,
       });
-    });
+    }
 
-    // Sort objects on this page by their top y (smallest first = top-down).
-    pageObjects.sort((a, b) => a.globalTopY - b.globalTopY);
+    // Group body lines into paragraphs using only vertical spacing.
+    // Iteration order: top-to-bottom (PDF y descending).
+    const sortedBody = [...bodyLines].sort((a, b) => b.el.y - a.el.y);
+    let currentGroup = [];
+
+    const finalizeGroup = (group) => {
+      if (group.length === 0) return;
+      const first = group[0].el;
+      const text = group.map(({ el }) => el.text).join(' ');
+      const ascent = (first.fontSize ?? 12) * 0.8;
+      const topYInPage = pageHeight - first.y - ascent;
+      pageObjects.push({
+        id: paragraphId++,
+        type: 'paragraph',
+        pageIdx,
+        text,
+        x: Math.min(...group.map(({ el }) => el.x)),
+        fontSize: first.fontSize ?? 12,
+        lines: group.map(({ el }) => ({
+          text: el.text,
+          x: el.x,
+          y: el.y,
+          fontSize: el.fontSize ?? 12,
+          isBold: !!el.isBold,
+          isItalic: !!el.isItalic,
+          color: el.color ?? null,
+        })),
+        isBold: !!first.isBold,
+        isItalic: !!first.isItalic,
+        color: first.color ?? null,
+        _sortY: topYInPage,
+      });
+    };
+
+    for (const cur of sortedBody) {
+      if (currentGroup.length === 0) {
+        currentGroup.push(cur);
+        continue;
+      }
+      const prev = currentGroup[currentGroup.length - 1].el;
+      const gap = prev.y - cur.el.y; // > 0 since sorted descending
+      const prevFs = prev.fontSize ?? 12;
+      const curFs = cur.el.fontSize ?? 12;
+      const breaksOnSpacing = gap > curFs * PARA_BREAK_FACTOR;
+      const breaksOnFontJump =
+        Math.abs(prevFs - curFs) > FONT_SIZE_TOLERANCE;
+      if (breaksOnSpacing || breaksOnFontJump) {
+        finalizeGroup(currentGroup);
+        currentGroup = [cur];
+      } else {
+        currentGroup.push(cur);
+      }
+    }
+    finalizeGroup(currentGroup);
+
+    // Sort within this page by top-y (smallest first = top-down reading order),
+    // then strip the helper.
+    pageObjects.sort((a, b) => a._sortY - b._sortY);
+    for (const obj of pageObjects) delete obj._sortY;
     objects.push(...pageObjects);
   });
 
   return objects;
 }
 
-// Pretty-print the unified objects stream in the format requested by the
-// product spec:
-//
-//   Objects:
-//   {type:image,...}
-//   {type:paragraph, id:0,...}
-//   ...
-//
+// Pretty-print the unified objects stream. Image dataUrl is truncated so the
+// console stays scannable even on PDFs with many embedded images.
 export function logObjects(objects) {
   console.log('Objects:');
   for (const obj of objects) {
     if (obj.type === 'image' && typeof obj.dataUrl === 'string') {
-      // Truncate base64 so the console stays scannable.
       const { dataUrl, ...rest } = obj;
       const preview =
         dataUrl.length > 64 ? dataUrl.slice(0, 48) + '…[truncated]' : dataUrl;
