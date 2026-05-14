@@ -314,3 +314,74 @@ export function detectParasAndHeaders(textElements, pageWidth = 612) {
 }
 
 export { decodePdfLiteralString };
+
+// ── Cross-Page Paragraph Detection ────────────────────────────────────────────
+
+/**
+ * Groups positioned text elements across all pages into paragraphs.
+ *
+ * Rule: a paragraph breaks between two consecutive lines when their vertical
+ * gap exceeds `prev.fontSize * 1.5` (in PDF user-space points). Same-line
+ * elements (multiple chunks at the same y) stay in the same paragraph
+ * because their gap is ~0.
+ *
+ * Page boundary: every page starts a new paragraph. A line at the bottom of
+ * one page and its visual continuation at the top of the next are reported as
+ * two distinct paragraphs by design.
+ *
+ * Each page's elements are sorted by y DESC (top-of-page first) before pair
+ * analysis, so this function is safe to call on a `textElements[]` whose
+ * array order has been disturbed by edits (insertTextElement, splitTextElement).
+ *
+ * @param {Array<Array<{ text: string, x: number, y: number, width: number, fontSize: number }>>} textElementsPerPage
+ *   Outer array indexed by pageIdx; inner array is that page's textElements.
+ * @returns {Array<{
+ *   paragraphIdx: number,
+ *   lines: Array<{ pageIdx: number, elIdx: number, el: object }>
+ * }>}
+ */
+export function detectParagraphsFromElements(textElementsPerPage) {
+    const result = [];
+    if (!Array.isArray(textElementsPerPage)) return result;
+
+    let paragraphIdx = 0;
+    let currentLines = [];
+
+    const flushCurrent = () => {
+        if (currentLines.length > 0) {
+            result.push({ paragraphIdx, lines: currentLines });
+            paragraphIdx++;
+            currentLines = [];
+        }
+    };
+
+    for (let pageIdx = 0; pageIdx < textElementsPerPage.length; pageIdx++) {
+        const els = textElementsPerPage[pageIdx];
+        if (!Array.isArray(els) || els.length === 0) continue;
+
+        // Tag with original elIdx, then sort by y DESC so the walk runs in
+        // reading order regardless of how the source array is ordered.
+        const tagged = els
+            .map((el, elIdx) => ({ el, elIdx }))
+            .sort((a, b) => (b.el?.y ?? 0) - (a.el?.y ?? 0));
+
+        // Page boundary always starts a fresh paragraph.
+        flushCurrent();
+        currentLines.push({ pageIdx, elIdx: tagged[0].elIdx, el: tagged[0].el });
+
+        for (let i = 1; i < tagged.length; i++) {
+            const prev = tagged[i - 1].el;
+            const curr = tagged[i].el;
+            const gap = (prev?.y ?? 0) - (curr?.y ?? 0);
+            const lineHeightThreshold = (prev?.fontSize || 12) * 1.5;
+
+            if (gap > lineHeightThreshold) {
+                flushCurrent();
+            }
+            currentLines.push({ pageIdx, elIdx: tagged[i].elIdx, el: curr });
+        }
+    }
+
+    flushCurrent();
+    return result;
+}

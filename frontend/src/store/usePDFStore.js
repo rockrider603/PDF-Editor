@@ -32,7 +32,7 @@ const findAndStripCursorMarker = (pages, fallbackCursor) => {
   return { pages: anyChange ? updatedPages : pages, cursor: newCursor ?? fallbackCursor };
 };
 
-const applyGlobalReflow = (pages, startPageIdx, yThreshold, amount, skipFilter = null) => {
+export const applyGlobalReflow = (pages, startPageIdx, yThreshold, amount, skipFilter = null) => {
   // NOTE: we intentionally do NOT short-circuit on amount===0.
   // Callers pass amount=0 as a pure page-boundary normalisation pass
   // (no flowY shifts, just checks that elements respect top/bottom margins).

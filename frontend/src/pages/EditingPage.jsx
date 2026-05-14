@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import EditToolbar from "../components/EditToolbar";
-import PDFViewer from "../components/PDFViewer";
+import SinglePageView from "../components/SinglePageView";
 import { usePDFStore } from "../store/usePDFStore";
 import { PdfDocument } from "pdf-parser";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { buildObjects, logObjects } from "../lib/buildObjects";
 
 const EditingPage = () => {
   const navigate = useNavigate();
@@ -91,15 +92,16 @@ const EditingPage = () => {
     return () => { cancelled = true; };
   }, [currentPDF]);
 
-  // ── Monitor live changes to the objects ─────────────────────────────────────
-  // useEffect(() => {
-  //   if (pages.length > 0) {
-  //     console.log("--- LIVE OBJECTS UPDATE ---");
-  //     pages.forEach((page, idx) => {
-  //       console.log(`Page ${idx + 1} Text Elements:`, page.textElements);
-  //     });
-  //   }
-  // }, [pages]);
+  // ── Unified objects stream ─────────────────────────────────────────────────
+  // Flatten pages[] into a single ordered list of typed objects (image,
+  // paragraph, header, line). Paragraphs receive globally-incrementing ids
+  // starting at 0. Logged on every change so the console matches what the
+  // SinglePageView is rendering.
+  const objects = useMemo(() => buildObjects(pages), [pages]);
+
+  useEffect(() => {
+    if (objects.length > 0) logObjects(objects);
+  }, [objects]);
 
   // ── Download ────────────────────────────────────────────────────────────────
   const handleDownload = async () => {
@@ -254,9 +256,9 @@ const EditingPage = () => {
               <span>Failed to parse PDF: {parseError}</span>
             </div>
           ) : (
-            <PDFViewer
+            <SinglePageView
               pages={pages}
-              selectedTool={selectedTool}
+              objects={objects}
               isLoading={isLoading}
             />
           )}

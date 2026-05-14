@@ -55,6 +55,7 @@ export {
     processContentStream,
     detectParasAndHeaders,
     groupIntoParagraphs,
+    detectParagraphsFromElements,
     decodePdfLiteralString
 } from './src/text/pdfContentStreamTextProcessor.js';
 

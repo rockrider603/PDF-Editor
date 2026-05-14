@@ -4,7 +4,7 @@ import { usePDFStore } from "../store/usePDFStore";
 import { applyGlobalReflow } from "../store/usePDFStore";
 import PageCanvas from "./PageCanvas";
 import { CANVAS_WIDTH } from "./pdfConstants";
-// import { detectParagraphsFromElements } from "pdf-parser";
+import { detectParagraphsFromElements } from "pdf-parser";
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
@@ -213,6 +213,11 @@ const PDFViewer = ({
         }
 
         workingPages = crossPageReflow(workingPages, pageIdx);
+        // Page-boundary normalisation pass (amount=0): crossPageReflow doesn't
+        // re-check the next page's REMAINING content after pulling its first
+        // element up, so a page can end up with its top element touching the
+        // page edge. This pass re-enforces top/bottom margins everywhere.
+        workingPages = applyGlobalReflow(workingPages, pageIdx, -1, 0);
 
         // If the current element was removed, park cursor at end of previous element.
         if (totalRemoved > 0 && reflowedEls[elIdx] === undefined) {
@@ -281,6 +286,8 @@ const PDFViewer = ({
             );
             newPages = applyGlobalReflow(newPages, pageIdx, el.y + 0.1, -lh);
             newPages = crossPageReflow(newPages, pageIdx);
+            // Re-enforce top/bottom margins after crossPageReflow.
+            newPages = applyGlobalReflow(newPages, pageIdx, -1, 0);
 
             setActiveCursor(prev => ({ ...prev, elIdx: prevElIdx, charOffset: prevEl.text.length }));
             usePDFStore.getState().setPages(newPages);
@@ -359,6 +366,8 @@ const PDFViewer = ({
         }
 
         workingPages = crossPageReflow(workingPages, pageIdx);
+        // Re-enforce top/bottom margins after crossPageReflow.
+        workingPages = applyGlobalReflow(workingPages, pageIdx, -1, 0);
         setActiveCursor(prev => ({ ...prev, elIdx: prevElIdx, charOffset: joinOffset }));
         usePDFStore.getState().setPages(workingPages);
       };
@@ -474,23 +483,37 @@ const PDFViewer = ({
             const firstLine = newText.substring(0, lastSpace);
             const secondLine = newText.substring(lastSpace + 1);
             const lineHeight = (el.fontSize || 12) * 1.2;
+            const onNewLine = newOffset > lastSpace;
+            const cursorOffset = onNewLine ? newOffset - lastSpace - 1 : newOffset;
 
-            // Atomic: update current line + insert overflow line + page-boundary check
+            // Atomic: update current line + insert overflow line + page-boundary check.
+            // wrapTextElement plants a CURSOR_MARKER that survives the reflow (including
+            // cross-page moves) and updates activeCursor itself — calling setActiveCursor
+            // afterwards would double-jump past the wrap target.
             wrapTextElement(
               activeCursor.pageIdx,
               activeCursor.elIdx,
               firstLine,
               secondLine,
               lineHeight,
-              (txt) => measureWidth(txt)
+              (txt) => measureWidth(txt),
+              { onNewLine, charOffset: cursorOffset }
             );
 
-            setActiveCursor(prev => ({
-              ...prev,
-              elIdx: prev.elIdx + 1,
-              charOffset: newOffset > lastSpace ? newOffset - lastSpace - 1 : newOffset,
-              caretX: 0
-            }));
+            // The wrap creates a one-word overflow line. Without cascading,
+            // every keystroke leaves another orphan line stacked between the
+            // user's line and the rest of the paragraph. Cascade from the
+            // post-wrap cursor position so the trailing word naturally flows
+            // into the next paragraph line (same algorithm Delete uses).
+            const post = usePDFStore.getState().activeCursor;
+            if (post.pageIdx !== null && post.elIdx !== null) {
+              cascadeCompactParagraph(
+                post.pageIdx,
+                post.elIdx,
+                measureWidth,
+                getMaxWidth
+              );
+            }
             prevent = true;
             handledBySpecial = true;
           }
