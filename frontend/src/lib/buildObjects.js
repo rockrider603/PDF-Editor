@@ -141,7 +141,7 @@ export function buildObjects(pages = []) {
       const ascent = (first.fontSize ?? 12) * 0.8;
       const topYInPage = pageHeight - first.y - ascent;
       pageObjects.push({
-        id: paragraphId++,
+        id: `p${paragraphId++}`,
         type: 'paragraph',
         pageIdx,
         text,
