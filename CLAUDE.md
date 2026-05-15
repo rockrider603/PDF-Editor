@@ -12,9 +12,13 @@ A **fully browser-side PDF editor** — no server, no uploads, no backend. The u
 - Parse multi-page PDFs directly in the browser using a custom `pdf-parser` ESM SDK
 - Extract and reconstruct text elements with their PDF coordinates and font sizes
 - Detect and render background images and inline page images
-- Live in-browser text editing: type, delete, bold, italic, resize, recolor
-- Re-export the edited state to a downloadable PDF via `pdf-lib`
-- Paragraph detection from raw `TextElement[]` using geometry-based heuristics (no pilcrow markers — PDFs have no semantic paragraph structure)
+- **Single-page continuous editing view** — all pages flow into one tall canvas with soft page-separator markers; no per-page canvas switching
+- Live in-browser text editing via per-block `contentEditable`; typing, Backspace, Enter all produce immediate visual reflow
+- **DOM-driven reflow** — a shared `ResizeObserver` on every editable block measures actual browser-rendered heights; layout positions downstream blocks accordingly without any debounce delay
+- **Three-layer editor architecture** — model (objects[]) → layout (layoutObjects pure fn) → render (absolute positioning from layout map)
+- Paragraph detection from raw `TextElement[]` using **spacing-only heuristics** (gap > 1.6 × fontSize = new paragraph) — no short-line / indent rules that fragment ragged-right body text
+- Header detection: SDK centre-tolerance check gated by ≤ 60 chars AND ≤ 8 words so long body lines are never misclassified as headings
+- Re-export the edited state to a downloadable PDF via `pdf-lib` (uses live edited objects, wraps text per-page)
 
 ---
 
@@ -23,7 +27,14 @@ A **fully browser-side PDF editor** — no server, no uploads, no backend. The u
 ```
 PDF-Editor/
 ├── index.js                        # CLI test harness — runs pdf-parser SDK against a local PDF
-├── package.json                    # Root CJS package; depends on pdf-parser via "file:./pdf-parser"
+├── package.json                    # Root CJS package (test harness); depends on pdf-parser via "file:./pdf-parser"
+├── pnpm-workspace.yaml             # pnpm workspace: packages = [frontend, pdf-parser]
+├── pnpm-lock.yaml                  # pnpm lockfile (root)
+├── debug/                          # Ad-hoc debug scripts (debug_pdf.js etc.)
+├── uploads/                        # Cached `.json` image metadata sidecars (legacy)
+├── Text fonts/                     # Bundled TTF fallbacks (used by ttfFontLoader)
+├── TEST.pdf / TEST2.pdf            # Sample inputs for the CLI harness
+├── Color bg.pdf / Hello World (1).pdf
 │
 ├── pdf-parser/                     # The standalone ESM SDK (browser-compatible)
 │   ├── package.json                # type: "module", pako + opentype.js deps
@@ -36,14 +47,14 @@ PDF-Editor/
 │       │   ├── pdfDictionaryResolver.js# resolveDictOrRef, extractInlineDictionary
 │       │   └── pdfPageTreeResolver.js  # findRootRef, extractFirstKid, extractKidN, extractPageCount
 │       ├── text/
-│       │   ├── pdfCMapParser.js        # parseCMap, translateText, buildCharMap, decodeUnicodeHex, getCMapCodeLengths
-│       │   ├── pdfFontCMapResolver.js  # findFontAndCMap — walks /Resources → /Font → /ToUnicode
-│       │   ├── pdfContentStreamTextProcessor.js # processContentStream, detectParasAndHeaders, decodePdfLiteralString
-│       │   │                                    # ↳ NOW ALSO EXPORTS: groupIntoLines, getDominantLineGap,
-│       │   │                                    #   isParaBreak, detectParagraphs, buildParagraph
-│       │   ├── fontDictionaryUpdater.js# font dict patching utilities
-│       │   ├── ttfFontLoader.js        # TTF font loading (opentype.js)
-│       │   └── index.js               # sub-barrel for "pdf-parser/text"
+│       │   ├── pdfCMapParser.js              # parseCMap, translateText, buildCharMap, decodeUnicodeHex, getCMapCodeLengths
+│       │   ├── pdfFontCMapResolver.js        # findFontAndCMap — walks /Resources → /Font → /ToUnicode
+│       │   ├── pdfContentStreamTextProcessor.js
+│       │   │       # processContentStream, decodePdfLiteralString,
+│       │   │       # groupIntoParagraphs, detectParasAndHeaders
+│       │   ├── fontDictionaryUpdater.js      # font dict patching utilities (stub)
+│       │   ├── ttfFontLoader.js              # TTF font loading via opentype.js
+│       │   └── index.js                      # sub-barrel for "pdf-parser/text"
 │       ├── images/
 │       │   ├── imageDecoder.js         # decodeImageObject, parseImageMetadata — FlateDecode + DCTDecode
 │       │   ├── imageScanner.js         # scanPageImages — discovers all /XObject /Image entries
@@ -58,19 +69,22 @@ PDF-Editor/
     ├── vite.config.js
     └── src/
         ├── main.jsx                # React root, BrowserRouter
-        ├── App.jsx                 # Routes: / → UploadPage, /edit → EditingPage
+        ├── App.jsx                 # Routes: / and /upload → UploadPage, /edit → EditingPage
         ├── components/
-        │   ├── Navbar.jsx          # Top nav with DaisyUI theme switcher
+        │   ├── Navbar.jsx          # Top nav with theme toggle
         │   ├── FileUpload.jsx      # Drag-and-drop zone; validates size/type (50MB, PDF only)
-        │   ├── EditToolbar.jsx     # Sticky toolbar: Bold, Italic, Highlight, Size, Color, Download
-        │   ├── PDFViewer.jsx       # Core canvas: renders all pages, handles keyboard editing
+        │   ├── EditToolbar.jsx     # Sticky toolbar: Bold, Italic, Highlight, Size, Color, Reset, Save, Download, Share, Delete
+        │   ├── PDFViewer.jsx       # Global keyboard handler + scroller; renders one PageCanvas per page
+        │   ├── PageCanvas.jsx      # Per-page canvas: bg / images / text layers, click-to-position cursor
+        │   ├── ResizeOverlay.jsx   # 8-handle interactive image resize with Apply/Cancel
+        │   ├── pdfConstants.js     # CANVAS_WIDTH (850) + toCanvasY() helper
         │   └── Upload.js           # (utility)
         ├── pages/
         │   ├── UploadPage.jsx      # Upload landing; calls setCurrentPDF then navigates to /edit
-        │   └── EditingPage.jsx     # Orchestrator: runs sdk pipeline → setPages → renders PDFViewer
+        │   └── EditingPage.jsx     # Orchestrator: runs sdk pipeline → setPages → renders PDFViewer; owns handleDownload
         ├── store/
-        │   ├── usePDFStore.js      # Zustand store — all PDF state + text mutation actions
-        │   └── useThemeStore.js    # Zustand store — DaisyUI theme persistence
+        │   ├── usePDFStore.js      # Zustand store + applyGlobalReflow engine (text + image flow with page margins)
+        │   └── useThemeStore.js    # Zustand store — DaisyUI theme persistence (localStorage key "chat-theme")
         ├── constants/
         │   └── index.js            # THEMES, PDF_UPLOAD_LIMITS, EDITING_TOOLS, NOTIFICATION_MESSAGES
         └── lib/
@@ -87,6 +101,8 @@ PDF-Editor/
 | `pdf-editor-frontend` | `frontend/` | Browser (React) | UI, editing canvas, download |
 
 The root `package.json` / `index.js` is **a CLI test harness only** — it runs the SDK against a local `.pdf` file to verify the pipeline without opening a browser.
+
+The repo is set up as a pnpm workspace (`pnpm-workspace.yaml`). Install from the root with `pnpm install` and it links `pdf-parser` into `frontend` automatically.
 
 ---
 
@@ -109,10 +125,6 @@ const images         = await page.getImages();
 // Or everything at once:
 const result = await page.extract();
 // → { dimensions, textElements, classification, images }
-
-// Paragraph detection (run after getText, before or after classifyText):
-import { detectParagraphs } from 'pdf-parser/text';
-const paragraphs = detectParagraphs(textElements, result.dimensions.width);
 ```
 
 ### PdfPage internal flow (`getPage` → `extract`)
@@ -132,17 +144,23 @@ PdfPage.getText()
 
 PdfPage.classifyText(elements)
   └─ detectParasAndHeaders(elements, pageWidth)    → Classification
-     └─ [NEW] detectParagraphs(elements, pageWidth)
-          └─ groupIntoLines(elements)              → Line[][]
-          └─ getDominantLineGap(lines)             → number
-          └─ isParaBreak(prevLine, currLine, dominantGap, pageWidth) → boolean
-          └─ buildParagraph(lines)                 → ParagraphResult
+     └─ groupIntoParagraphs(bodyLines)             → Map<paraId, ParagraphBlock>
 
 PdfPage.getImages()
   └─ extractBackgroundImage(...)   → bg entry (coverage ≥ 80%)
   └─ buildXObjectNameMap(...)      → this page's XObject objNums
   └─ scanPageImages(...)           → all images, filtered to this page
 ```
+
+`pdf-parser/index.js` exposes these as named exports (no defaults):
+
+- Factory: `PdfDocument`, `PdfPage`
+- Utils: `uint8ToBinaryString`, `indexOfSeq`, `allocBytes`, `asciiToBytes`, `PDF_REGEX`
+- Core: `getObject`, `extractValue`, `resolveLength`, `decompressStream`, `findRootRef`, `extractFirstKid`, `resolveDictOrRef`, `extractInlineDictionary`
+- Text: `parseCMap`, `buildCharMap`, `translateText`, `decodeUnicodeHex`, `getCMapCodeLengths`, `findFontAndCMap`, `processContentStream`, `detectParasAndHeaders`, `groupIntoParagraphs`, `detectParagraphsFromElements`, `decodePdfLiteralString`
+- Images: `buildXObjectNameMap`, `parsePaintOperations`, `decodeImageObject`, `parseImageMetadata`, `extractBackgroundImage`, `getPageDimensions`, `scanPageImages`
+
+> Subpath exports: `pdf-parser/core`, `pdf-parser/text`, `pdf-parser/images` are sub-barrels for tree-shaking-friendly imports.
 
 ---
 
@@ -160,37 +178,36 @@ PdfPage.getImages()
 }
 ```
 
-### `Classification` (output of `page.classifyText()`)
+After the EditingPage post-processes a parsed page, header elements also get `isBold: true` and `isHeader: true`. The store may further set `isItalic`, `color` (CSS string) as edits happen.
+
+### `Classification` (output of `page.classifyText()` / `detectParasAndHeaders`)
 
 ```js
 {
   headers:        string[],
-  paragraphs:     string[],
   headerCount:    number,
+  text:           string[],   // body-line texts
+  textCount:      number,
+  paragraphs:     Map<number, ParagraphBlock>,
   paragraphCount: number,
+  textBlocks:     ParagraphBlock | HeaderEntry,  // headers + paragraphs, sorted by y DESC
   detailed: {
-    headers:    [{ text, xPosition, yPosition, fontSize, elementCenter, alignment }],
-    paragraphs: [{ text, xPosition, yPosition, fontSize, elementCenter, alignment }]
+    headers:    HeaderEntry[],
+    text:       BodyLine[],
+    paragraphs: Map<number, ParagraphBlock>,
+    textBlocks: (ParagraphBlock | HeaderEntry)[]
   }
 }
 ```
 
+Where:
+- `HeaderEntry = { text, type:'header', xPosition, yPosition, x, y, fontSize, elementCenter, alignment:'center' }`
+- `BodyLine`   = `{ ...textElement, type:'line' }`
+- `ParagraphBlock = { id, lines: BodyLine[], type:'Paragraph', text, x, y, width, fontSize }`
+
 Classification rules (page-width-relative, no hardcoded 612pt):
-- **Header**: element center within `pageWidth * 6.5%` of page center → `alignment: 'center'`
-- **Paragraph**: x < `pageWidth * 16.3%` → left-aligned text
-
-### `ParagraphResult` (output of `detectParagraphs()`)
-
-```js
-{
-  text:         string,        // full paragraph text; lines joined with '\n', runs joined with ' '
-  lines:        TextElement[][], // array of lines; each line is an array of TextElement objects
-  x:            number,        // leftmost x of any element in the paragraph (PDF points)
-  y:            number,        // y of the first line's first element = top of paragraph (PDF points)
-  fontSize:     number,        // fontSize of the first element (representative size)
-  elementCount: number         // total TextElement objects consumed by this paragraph
-}
-```
+- **Header**: `|elementCenter − pageCenter| < pageWidth * 0.065` (~40pt on a 612pt page)
+- **Body**: everything else, fed to `groupIntoParagraphs`
 
 ### `ImageEntry` (element of `page.getImages()`)
 
@@ -221,250 +238,60 @@ Background detection: an image is classified as background when its rendered are
 
 > **Note:** PDFs have zero semantic paragraph structure. There is no pilcrow (¶) or any paragraph marker in the content stream — only raw glyph-positioning operators (`BT`, `Tm`, `Td`, `Tj`, `TJ`, etc.). All paragraph boundaries must be inferred entirely from geometry.
 
-All five functions below live in `pdfContentStreamTextProcessor.js` and are exported from `pdf-parser/text`.
-
-Run header extraction via `classifyText` first, remove those elements, then run `detectParagraphs` on the remaining body elements. Headers interleaved with body text will corrupt `getDominantLineGap`.
-
----
-
-### `groupIntoLines(elements, snapTolerance = 2)` → `TextElement[][]`
-
-Buckets a flat sorted `TextElement[]` into lines. Elements whose `y` values differ by ≤ `snapTolerance` PDF points are placed on the same line. Each line array is sorted left-to-right by `x`.
-
-**Call this first, on a pre-sorted array** (sort descending `y`, break ties ascending `x`):
+The current algorithm uses a **priority-queue of four rules** evaluated top-down per pair of consecutive body lines (after sorting body lines by y DESC). It does **not** compute a dominant line gap or use median statistics — thresholds are constants tuned for typical body text:
 
 ```js
-elements.sort((a, b) => {
-  const yDiff = b.y - a.y;
-  if (Math.abs(yDiff) > 2) return yDiff;
-  return a.x - b.x;
-});
+const xthreshold = 15;     // PDF points: horizontal slack
+const ythreshold = 4;      // PDF points: vertical slack on top of (fontSize * Multiplierz)
+const Multiplierz = 1.2;   // multiplier on fontSize for "normal" line gap
+const DEFAULT_LINE_HEIGHT = 14;
 ```
 
-```js
-// Signature
-function groupIntoLines(elements, snapTolerance = 2)
+### `groupIntoParagraphs(bodyLines)` → `Map<number, ParagraphBlock>`
 
-// Variables
-// elements      — TextElement[], sorted top-to-bottom left-to-right
-// snapTolerance — max y-difference (PDF points) to still count as same line; default 2
-//                 raise to 3-4 if same-visual-line elements are being split
-// lineY         — y anchor of the first element that started the current line;
-//                 all subsequent elements compared against this, not each other,
-//                 to prevent drift across a run of closely-spaced lines
-// currentLine   — accumulator for the line being built
-// lines         — final result: array of lines (each line = TextElement[])
+`bodyLines` is a flat array of body-text elements (NOT pre-grouped into lines). The function:
 
-function groupIntoLines(elements, snapTolerance = 2) {
-  const lines = [];
-  let currentLine = [];
+1. Computes `xnorm` = leftmost x across all body lines, `xmargin` = rightmost edge across all body lines.
+2. Sorts a copy by `y` descending (top of page first).
+3. Walks pairs `(prev, curr)` and starts a new paragraph if **any** rule fires (first match wins):
 
-  for (const el of elements) {
-    if (currentLine.length === 0) {
-      currentLine.push(el);
-    } else {
-      const lineY = currentLine[0].y;
-      if (Math.abs(el.y - lineY) <= snapTolerance) {
-        currentLine.push(el);
-      } else {
-        lines.push([...currentLine].sort((a, b) => a.x - b.x));
-        currentLine = [el];
-      }
-    }
-  }
-  if (currentLine.length) lines.push(currentLine);
-  return lines;
-}
-```
-
----
-
-### `getDominantLineGap(lines)` → `number`
-
-Returns the **median** vertical distance between consecutive lines. This is the adaptive baseline used by `isParaBreak` — never hardcode a pixel threshold without calling this first.
-
-```js
-// Signature
-function getDominantLineGap(lines)
-
-// Variables
-// lines        — TextElement[][], output of groupIntoLines
-// gap          — lines[i-1][0].y - lines[i][0].y  (positive because y descends down page)
-//                filtered to (0, 100) to exclude same-line noise and giant structural gaps
-// gaps         — array of all measured inter-line distances
-// median index — Math.floor(gaps.length / 2) after ascending sort
-// fallback 14  — used when gaps is empty (single-line page); ≈ normal spacing for 12pt text
-
-function getDominantLineGap(lines) {
-  const gaps = [];
-  for (let i = 1; i < lines.length; i++) {
-    const gap = lines[i - 1][0].y - lines[i][0].y;
-    if (gap > 0 && gap < 100) gaps.push(gap);
-  }
-  gaps.sort((a, b) => a - b);
-  return gaps[Math.floor(gaps.length / 2)] || 14;
-}
-```
-
----
-
-### `isParaBreak(prevLine, currLine, dominantGap, pageWidth)` → `boolean`
-
-Returns `true` if there is a paragraph boundary between `prevLine` and `currLine`. Applies six independent rules in order; the first rule that fires wins.
-
-```js
-// Parameters
-// prevLine     — TextElement[], the line above (already collected into current paragraph)
-// currLine     — TextElement[], the line below (candidate for new paragraph)
-// dominantGap  — median line gap from getDominantLineGap; scales all gap-based thresholds
-// pageWidth    — PDF page width in points; scales all x-based thresholds (nothing hardcoded)
-
-function isParaBreak(prevLine, currLine, dominantGap, pageWidth) {
-
-  const prevY = prevLine[0].y;
-  const currY = currLine[0].y;
-  const gap   = prevY - currY;
-
-  // Rule 1 — LARGE VERTICAL GAP
-  // gap > 1.8× normal line spacing → explicit paragraph spacing in the PDF
-  // Tune: lower to 1.5 to catch more breaks; raise to 2.2 to reduce false positives
-  if (gap > dominantGap * 1.8) return true;
-
-  // Rule 2 — SENTENCE-ENDING PUNCTUATION
-  // prevText    — all text runs in prevLine joined with ' ' then right-trimmed
-  // regex       — [.!?] optionally followed by closing quote/bracket, then end of string
-  //               catches: "Hello.", "Really?", "Stop!", `"Indeed."`, "confirmed.]"
-  //               does NOT match trailing hyphen (hyphenated line-break is not a sentence end)
-  const prevText = prevLine.map(e => e.text).join(' ').trimEnd();
-  if (/[.!?]["'»)\]]?\s*$/.test(prevText)) return true;
-
-  // Rule 3 — FIRST-LINE INDENTATION
-  // prevStartX / currStartX — leftmost x of any element in each line
-  // threshold: 4% of pageWidth (~24pt on 612pt page ≈ one tab stop)
-  // avoids triggering on 1-2pt x-jitter present in justified text
-  const prevStartX = Math.min(...prevLine.map(e => e.x));
-  const currStartX = Math.min(...currLine.map(e => e.x));
-  if (currStartX - prevStartX > pageWidth * 0.04) return true;
-
-  // Rule 4 — SHORT LAST LINE
-  // prevLineRight      — rightmost edge of prevLine (e.x + e.width for each element)
-  // prevLineWidth      — total horizontal span of the line
-  // textColumnWidth    — estimated column width; 68% of pageWidth (typical single-column margin)
-  //                      replace with max observed line width across the page for more accuracy
-  // threshold: line fills < 72% of column → likely a paragraph-ending short line
-  // full wrapped lines sit at 95-100%; mid-paragraph lines never fall this short
-  const prevLineRight   = Math.max(...prevLine.map(e => e.x + e.width));
-  const prevLineLeft    = Math.min(...prevLine.map(e => e.x));
-  const prevLineWidth   = prevLineRight - prevLineLeft;
-  const textColumnWidth = pageWidth * 0.68;
-  if (prevLineWidth < textColumnWidth * 0.72) return true;
-
-  // Rule 5 — FONT SIZE CHANGE
-  // tolerance: 1.5pt to absorb encoding noise for visually identical sizes
-  // a change larger than 1.5pt (e.g. 12pt body → 18pt heading) = structural boundary
-  const prevFontSize = prevLine[0].fontSize;
-  const currFontSize = currLine[0].fontSize;
-  if (Math.abs(prevFontSize - currFontSize) > 1.5) return true;
-
-  // Rule 6 — X ALIGNMENT SHIFT
-  // absolute horizontal shift > 12% of pageWidth (~73pt on 612pt page)
-  // distinguishes column jumps / side-notes from normal indentation (≤4%, Rule 3)
-  if (Math.abs(currStartX - prevStartX) > pageWidth * 0.12) return true;
-
-  return false;
-}
-```
-
-**Edge case overrides to add inside `isParaBreak` before returning:**
-
-| Edge Case | Detection | Override |
+| Rule | Condition | Meaning |
 |---|---|---|
-| Bullet / numbered list | prev and curr both start with `•`, `-`, `*`, or `^\d+\.` AND gap is normal | Skip Rule 4 |
-| Drop cap | font-size change but element is a single character at line start | Skip Rule 5 |
-| Hyphenated line break | `prevText` ends with `-` | Skip Rule 2 |
-| RTL text (Arabic/Hebrew) | Unicode range U+0590–U+08FF | Reverse x-sort in `groupIntoLines` |
-| Scanned PDF | very low element density across whole page | Set a `scanMode` flag; skip all rules |
+| 1. Spacing After  | `(prev.y − curr.y) > prev.fontSize * 1.2 + 4` | Large vertical gap |
+| 2. Short Line     | `prev.x + prev.width < xmargin − 15`             | Last line of a paragraph is short |
+| 3. Indented Start | `curr.x > xnorm + 15`                            | First-line indent |
+| 4. Hanging Indent | `curr.x < prev.x`                                 | Outdent / hanging-indent style |
 
----
-
-### `detectParagraphs(elements, pageWidth)` → `ParagraphResult[]`
-
-Top-level orchestrator. Calls the four functions above in sequence and returns the final paragraph array.
+Each finalised paragraph is stored in a 1-indexed `Map` with this shape:
 
 ```js
-// Parameters
-// elements  — TextElement[], the full output of page.getText() minus any header elements
-//             (strip headers first via classifyText to avoid corrupting getDominantLineGap)
-// pageWidth — PDF page width in points (from page.extract() → dimensions.width)
-
-// Internal variables
-// lines           — TextElement[][], from groupIntoLines
-// dominantGap     — median line gap, from getDominantLineGap
-// paragraphs      — final ParagraphResult[] being built
-// currentParaLines— TextElement[][], accumulates lines for the paragraph currently being built
-//                   reset to [currLine] each time isParaBreak fires
-// flush after loop— the last paragraph never triggers isParaBreak (no line comes after it),
-//                   so it must be pushed explicitly after the for-loop ends
-
-function detectParagraphs(elements, pageWidth) {
-  const lines        = groupIntoLines(elements);
-  const dominantGap  = getDominantLineGap(lines);
-  const paragraphs   = [];
-  let currentParaLines = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    if (i === 0) {
-      currentParaLines.push(lines[i]);
-      continue;
-    }
-    if (isParaBreak(lines[i - 1], lines[i], dominantGap, pageWidth)) {
-      if (currentParaLines.length) {
-        paragraphs.push(buildParagraph(currentParaLines));
-      }
-      currentParaLines = [lines[i]];
-    } else {
-      currentParaLines.push(lines[i]);
-    }
-  }
-  if (currentParaLines.length) paragraphs.push(buildParagraph(currentParaLines));
-  return paragraphs;
+{
+  id:       number,
+  lines:    BodyLine[],   // raw body-text elements that compose this paragraph
+  type:     'Paragraph',
+  text:     string,       // lines.map(l => l.text).join(' ')
+  x:        number,       // x of the first line (top-most in reading order)
+  y:        number,       // y of the first line
+  width:    number,       // max width across all lines
+  fontSize: number        // fontSize of the first line (fallback 14)
 }
 ```
 
----
+### `detectParasAndHeaders(textElements, pageWidth = 612)`
 
-### `buildParagraph(lines)` → `ParagraphResult`
+Top-level orchestrator. Splits elements into headers and body lines using the centre-tolerance rule, then runs `groupIntoParagraphs` on the body lines. Returns the `Classification` shape above. `textBlocks` is the union of headers and paragraph blocks sorted by y descending — useful for rendering or downstream processing in reading order.
 
-Converts an array of lines (each a `TextElement[]`) into a single `ParagraphResult` object.
+### `processContentStream(decompressed, fonts)` → `TextElement[]`
 
-```js
-// Parameter
-// lines — TextElement[][], the accumulated lines for one paragraph
+Walks the content stream line-by-line, tracking `currentFont` from `/Fn s Tf`, `currentX/currentY` from `Td`/`Tm`, and decoding `TJ` arrays / `Tj` singles via the per-font ToUnicode CMap.
 
-// Internal variables
-// allElements  — lines.flat(): single flat TextElement[] across all lines in the paragraph
-// text         — reconstructed string: lines joined with '\n', each line's runs joined with ' '
-// x            — Math.min over all e.x → leftmost edge = paragraph left boundary
-// y            — lines[0][0].y → top of paragraph (lines are top-to-bottom after sorting)
-// fontSize     — lines[0][0].fontSize → representative size for the paragraph
-// elementCount — total TextElement objects consumed (useful for debugging)
+Merging rule: consecutive chunks whose `y` differs by `≤ 0.5pt` are concatenated into the same element (reconstructs a logical text run from a `[<a>kern<b>]TJ` operator). A `TJ` kern number more negative than `−150` is rendered as a literal space.
 
-function buildParagraph(lines) {
-  const allElements = lines.flat();
-  const text = lines.map(line =>
-    line.map(e => e.text).join(' ')
-  ).join('\n');
+Each output element gets an estimated `width = text.length * 5.5` (cheap pixel-free approximation).
 
-  return {
-    text,
-    lines,
-    x:            Math.min(...allElements.map(e => e.x)),
-    y:            lines[0][0].y,
-    fontSize:     lines[0][0].fontSize,
-    elementCount: allElements.length
-  };
-}
-```
+### `decodePdfLiteralString(token)` → `string`
+
+Strips `(...)` delimiters and expands escape sequences (`\\`, `\(`, `\)`, `\n`, `\r`, `\t`, `\b`, `\f`).
 
 ---
 
@@ -472,16 +299,26 @@ function buildParagraph(lines) {
 
 PDF coordinate origin = **bottom-left**. CSS origin = **top-left**. Always convert before placing elements.
 
+`frontend/src/components/pdfConstants.js` exports the two coordinate constants/helpers everyone uses:
+
 ```js
-const CANVAS_WIDTH = 850; // fixed display width in CSS px
-const scale    = CANVAS_WIDTH / pageWidth;
-const canvasY  = (pageHeight - pdfY - elementHeight) * scale; // CSS top
-const canvasX  = pdfX * scale;                                // CSS left
+export const CANVAS_WIDTH = 850; // fixed display width in CSS px
+
+export function toCanvasY(pdfY, elHeight, pageHeight, scale) {
+  return (pageHeight - pdfY - elHeight) * scale;
+}
 ```
 
-`PDFViewer.jsx` uses a local `toCanvasY(pdfY, elHeight, pageHeight, scale)` function for this.
-
 For text elements, `elHeight` is estimated as `fontSize * 0.8` (ascent only, no descender).
+
+Inside `usePDFStore.applyGlobalReflow`, the engine works in a **global Y space** running downward from the top of page 0:
+
+```js
+const pageOffsets[i] = sum of all earlier page heights
+const globalY = pageOffsets[pageIdx] + (pageHeight - el.y)   // BOTTOM of element
+```
+
+Elements are then sorted by `globalY` ascending and replayed onto pages while honouring a top/bottom margin of `48pt`.
 
 ---
 
@@ -493,7 +330,8 @@ For text elements, `elHeight` is estimated as `fontSize * 0.8` (ascent only, no 
   currentPDF:   File | null,
   pages:        PageResult[],       // Array<{ dimensions, textElements, classification, images }>
   pageCount:    number,
-  activeCursor: { pageIdx: number|null, elIdx: number|null, charOffset: number, caretX: number },
+  activeCursor: { pageIdx: number|null, elIdx: number|null, charOffset: number|null, caretX: number },
+  activeImage:  null | { pageIdx: number, imgIdx: number, side: 'left'|'right'|'selected' },
   isLoading:    boolean,
   error:        string | null,
 
@@ -501,7 +339,8 @@ For text elements, `elHeight` is estimated as `fontSize * 0.8` (ascent only, no 
   setCurrentPDF(file),
   setPages(pages),
   setPageCount(count),
-  setActiveCursor(cursorOrUpdater),  // accepts value or (prev) => next updater
+  setActiveCursor(cursorOrUpdater),   // accepts value or (prev) => next updater
+  setActiveImage(imageOrUpdater),
   setIsLoading(bool),
   clearError(),
 
@@ -510,90 +349,232 @@ For text elements, `elHeight` is estimated as `fontSize * 0.8` (ascent only, no 
   updateTextFontSize(pageIdx, elIdx, newSize),
   updateTextColor(pageIdx, elIdx, newColor),
   updateTextFormat(pageIdx, elIdx, { isBold?, isItalic? }),
-  shiftElementsBelow(pageIdx, yThreshold, amount),   // also shifts pageImages
+
   insertTextElement(pageIdx, elIdxToInsertAfter, newElement),
   removeTextElement(pageIdx, elIdx),
+
+  // Flow control (delegate to applyGlobalReflow internally)
+  shiftElementsBelow(pageIdx, yThreshold, amount),
+  shiftElementsAbove(pageIdx, yThreshold, amount),
+
+  // Atomic structural edits
+  splitTextElement(pageIdx, elIdx, textBefore, textAfter, lineHeight, measureFn),
+  wrapTextElement(pageIdx, elIdx, firstLineText, secondLineText, lineHeight, measureFn, cursorTarget?),
+  cascadeCompactParagraph(pageIdx, startIdx, measureFn, maxWidthFn),
+
+  // Image mutation
+  updatePageImage(pageIdx, imgIdx, newDataUrl, newAppearance),
+  resizePageImage(pageIdx, imgIdx, newRenderedWidth, newRenderedHeight),
 }
 ```
+
+### The `applyGlobalReflow` engine
+
+Lives at the top of `usePDFStore.js` as a named export (the store actions call it internally; `PDFViewer.jsx` also imports it directly for its Backspace cross-page reflow helpers). It:
+
+1. Builds a flat list of every text element + every page image, each tagged with its `globalY` (bottom-of-element in document-global PDF points, running downward).
+2. Shifts items below `yThreshold` on `startPageIdx` by `amount` (positive = move content down; negative = pull up).
+3. Sorts everything by `globalY` ascending and replays them onto pages, enforcing:
+   - **Word-like flow constraint**: each element's TOP must come at or after the previous element's BOTTOM (so a tall image doesn't overlap whatever was below it).
+   - **Top margin**: items too close to a page's top get nudged down by exactly the deficit.
+   - **Bottom margin**: items that fell below a page's bottom are bumped to the top of the NEXT page (creating extra pages on demand).
+4. Rebuilds the `pages[]` array with new `textElements` arrays and image appearances.
+
+A `skipFilter` callback can exclude specific items from being shifted (used by `resizePageImage` so the image being resized doesn't move).
+
+`amount === 0` is **not** a short-circuit — callers use it as a pure page-boundary normalisation pass (push things off the bottom margin, etc.).
+
+### CURSOR_MARKER pattern
+
+`splitTextElement` and `wrapTextElement` insert a new element and then call `applyGlobalReflow`, which rebuilds the `pages` array (new object identities, possibly across pages). To track where the cursor should land, the new element is tagged with a sentinel key:
+
+```js
+const CURSOR_MARKER = '__pendingCursor';
+newLineEl[CURSOR_MARKER] = { charOffset: 0 };
+```
+
+After reflow, `findAndStripCursorMarker` walks the rebuilt pages, locates the marker, strips it, and returns `{ pages: cleanPages, cursor: { pageIdx, elIdx, charOffset, caretX: 0 } }` — so the cursor follows the element even if it moved to a brand-new page.
+
+### `cascadeCompactParagraph(pageIdx, startIdx, measureFn, maxWidthFn)`
+
+Greedy compaction triggered by forward-delete. Walks downward from `startIdx`, pulling words from each next line into the current one until either:
+
+- The next line's font size differs by `> 1.5pt`, **or**
+- The vertical gap to the next line is `≥ fontSize * 1.5` (treats them as separate paragraphs and stops).
+
+Fully consumed lines are removed; remaining elements + page images on the same page below a removed line are shifted up by the removed line's `lineHeight`. Final pass: `applyGlobalReflow(amount=0)` for page-boundary cleanup.
 
 ---
 
 ## PDFViewer — Canvas Architecture
 
-`PDFViewer` renders one `<PageCanvas>` per page, stacked vertically with a grey inter-page gap.
-
-Each `<PageCanvas>` is a `position:relative` div of fixed width 850px:
+`PDFViewer` is now thin: it owns the **global keyboard listener** and renders one `<PageCanvas>` per page. `PageCanvas` owns the per-page DOM (layers, caret, click handling, image selection).
 
 ```
-<div style={{ position:'relative', width:850, height: pageHeight*scale, background:'#fff' }}>
-
-  {/* Layer 0 — Background (zIndex 0) */}
-  <img style={{ position:'absolute', top:0, left:0, width:'100%', height:'100%', objectFit:'fill' }} />
-
-  {/* Layer 1 — Page images (zIndex 1) */}
-  {images.pageImages.map(img => {
-    const ap = img.appearances[0];
-    // x, y converted with toCanvasY
-    <img style={{ position:'absolute', left:ap.x*scale, top:toCanvasY(...), width:..., height:... }} />
-  })}
-
-  {/* Layer 2 — Text elements (zIndex 2) */}
-  {textElements.map((el, idx) => (
-    <div
-      id={`text-el-${pageIdx}-${idx}`}
-      onClick={handleTextClick}     // sets activeCursor
-      style={{ position:'absolute', left:el.x*scale, top:toCanvasY(...), fontSize:el.fontSize*scale, ... }}
-    >
-      {el.text}
-      {isActive && <div className="bg-blue-600" style={{ blinking caret }} />}
-    </div>
-  ))}
-</div>
+<PDFViewer>           ← keyboard handler, scroll container
+  <PageCanvas page={p1} />
+  <PageCanvas page={p2} />
+  ...
 ```
 
-### Keyboard Editing (in PDFViewer global `keydown` listener)
+### Per-page layer stack (`<PageCanvas>`)
 
-- **Printable char**: insert at `charOffset`, word-wrap if line overflows. If the new text exceeds the bounding box, it triggers mid-word wrapping, forcing the overflow to a new line and pushing subsequent elements down via `shiftElementsBelow`.
-- **Backspace at offset > 0**: delete char before cursor.
-- **Backspace at offset 0**: triggers smart backspace wrapping. It measures available space on the previous line and moves only as many words as fit. It pulls up subsequent lines via greedy text reflow (cascading upward text compaction) when space is freed.
-- **Enter**: splits the current text element at the cursor, moves the trailing text to a new line exactly one `lineHeight` below, and shifts all elements below down. Triggers cascading word reflow if the new line overflows.
-- **ArrowLeft / ArrowRight**: move `charOffset` within element or jump to adjacent element.
-- Text width is measured with an off-screen `<canvas>` and `CanvasRenderingContext2D.measureText()`.
+Each `PageCanvas` is a `position: relative` div of fixed width `CANVAS_WIDTH` (850px), height = `pageHeight * scale`:
+
+```
+Layer 0 — Background  (zIndex 0)    <img>  full-page bg if images.background exists
+Layer 1 — Page images (zIndex 1–5)  per image: optional left-side caret, image wrapper, optional right-side caret
+                                    selected image gets <ResizeOverlay> + "Drag handles to resize" hint
+Layer 2 — Text        (zIndex 2)    one <div> per textElement; click → setActiveCursor;
+                                    blinking caret div when isActive
+```
+
+Each text element also has `data-para-id={paraId}` (or `'header'`) — derived from `classification.detailed.paragraphs` by matching `(x, y, text)` triples. This is what downstream paragraph-aware reflow logic uses to decide whether two lines belong to the same paragraph.
+
+### Active page auto-scroll
+
+`PageCanvas` calls `containerRef.current.scrollIntoView({ block: 'nearest' })` whenever its page becomes the active one. `'nearest'` is a no-op when already visible, so in-page typing doesn't jolt the viewport — only cross-page moves (Enter overflowing to a new page) trigger a scroll.
+
+### Image selection states
+
+Clicking an image computes the click-X within the image bounding box:
+
+- `relX < 0.3 * width`  → `side: 'left'`   (blue caret to the left)
+- `relX > 0.7 * width`  → `side: 'right'`  (blue caret to the right)
+- otherwise            → `side: 'selected'` (full `<ResizeOverlay>` with 8 handles)
+
+`ResizeOverlay` lets the user drag any of the 8 handles (n/ne/e/se/s/sw/w/nw) with a 20px minimum. Apply calls `resizePageImage` which:
+
+- Keeps the image's CSS top-left fixed (adjusts the PDF y so the bottom-left stays in the same place visually).
+- Calls `applyGlobalReflow` with `deltaH = newH − oldH` and a `skipFilter` that excludes the image being resized.
+
+### Keyboard editing (in PDFViewer global `keydown` listener)
+
+All editing flows live in one big `keydown` effect. Width measurement is done with an off-screen `<canvas>` and `CanvasRenderingContext2D.measureText()` using `serif` at the element's pt-scaled size — see `measureWidth(txt, targetEl)` inside the handler.
+
+- **Printable char**: insert at `charOffset`. If the new text width exceeds the line's column space, `wrapTextElement` splits at the last space, pushes the tail to a new line below, and `applyGlobalReflow` pushes everything below down by one `lineHeight` (creating a new page if needed).
+- **Backspace at offset > 0**: delete char before cursor; then try greedy paragraph reflow inside the active paragraph on the same page. If the current element became empty, remove it and globally shift content up by `lineHeight`.
+- **Backspace at offset 0**:
+  - If at element 0 of a page (and not page 0): jump cursor to the last element of the previous page.
+  - Otherwise: detect the previous element's paragraph membership (via local helpers `buildParagraphMap` / `getParagraphFor`); if same paragraph, merge words back into the previous line until it fills, and lift everything below. If different paragraph, only jump the cursor (no merge).
+- **Enter**: split current element at cursor; insert new line exactly `lineHeight` below via `splitTextElement`; cursor follows via CURSOR_MARKER.
+- **Delete**: never moves the caret. Deletes the char at cursor (or, at end-of-line, attempts a same-paragraph compaction) and runs `cascadeCompactParagraph` to pull subsequent lines up greedily.
+- **ArrowLeft / ArrowRight**: move within element or jump to neighbour; respects element boundaries.
+
+> Note: parts of the keyboard handler currently reference `detectParagraphsFromElements` (intended cross-page paragraph builder). The import is commented out, so those code paths run with `detectParagraphsFromElements` undefined — they only fire on Backspace, and the typical Backspace path doesn't reach them. Be aware if you start exercising the cross-page Backspace flow.
 
 ---
 
 ## EditToolbar
 
-Sticky toolbar, reads/writes the active text element via `activeCursor`:
+Sticky toolbar at the top of `EditingPage`, reads/writes the active text element via `activeCursor`:
 
 | Control | Action |
 |---|---|
-| Bold | Toggles `el.isBold` via `updateTextFormat` |
-| Italic | Toggles `el.isItalic` via `updateTextFormat` |
-| Highlight | Sets tool mode (passive, no store mutation yet) |
-| Underline / Notes | Tool modes only |
-| Color picker | `updateTextColor` on active element |
-| Size input | `updateTextFontSize` on active element |
-| Save | Toast confirmation (no actual persistence yet) |
+| Bold | Toggles `el.isBold` via `updateTextFormat` — button is active when `el.isBold === true` |
+| Italic | Toggles `el.isItalic` via `updateTextFormat` — button is active when `el.isItalic === true` |
+| Highlight / Underline / Notes | Tool mode only (`onTool(toolId)`); no store mutation yet |
+| Color picker | `updateTextColor` on active element; defaults to `#FFFF00` |
+| Size input (4–144) | `updateTextFontSize` on active element |
+| Reset / Save / Share / Delete | Currently UI-only / wired to callbacks owned by `EditingPage` |
 | Download | Triggers `handleDownload` in `EditingPage` |
+
+The Bold/Italic icon buttons are disabled until a text element is selected (`activeCursor.pageIdx !== null`).
 
 ---
 
 ## PDF Download (`handleDownload` in EditingPage)
 
-Uses `pdf-lib` to reconstruct a PDF from the current Zustand `pages` state:
+Uses `pdf-lib` to reconstruct a PDF from the **live edited objects[]** (not the stale parsed `pages[]`). `SinglePageView` notifies `EditingPage` via `onObjectsChange` callback on every model mutation; `EditingPage` stores the result in `editedObjectsRef`.
 
 ```
 PDFDocument.create()
-  → for each page in pages:
-      pdfDoc.addPage([dimensions.width, dimensions.height])
-      if background: page.drawImage(embeddedPng/Jpg, full page rect)
-      for each pageImage: page.drawImage at appearances[0] coordinates
-      for each textElement: page.drawText(el.text, { x, y, size, font, color })
+  → for each page n in pages:
+      pdfPage = pdfDoc.addPage([dimensions.width, dimensions.height])
+      draw background image (from editedObjects where type='image' and role='background', pageIdx=n)
+      draw inline images (from editedObjects where type='image' and role='image', pageIdx=n)
+      for each text block (paragraph/header/line) where pageIdx=n:
+          greedy-wrap block.text at colWidth (avgCharWidth = fontSize × 0.55)
+          drawText each wrapped line starting at block.y, advancing −lineHeight per line
+          clip at bottom margin (48 pt)
   → pdfDoc.save() → Blob → <a>.click()
 ```
 
-Font used for all text: `StandardFonts.Helvetica`. Coordinates are used as-is (PDF origin = bottom-left matches `pdf-lib`'s coordinate system).
+Font: `StandardFonts.Helvetica`. Color: `rgb(0,0,0)`. Page dimensions from original `pages[n].dimensions`.
+
+**Page overflow in export**: if a grown paragraph's wrapped lines go below the page's bottom margin (48 pt) they are clipped. True page-overflow reflow (spilling to the next page) is a future enhancement.
+
+---
+
+## EditingPage — Pipeline
+
+1. On mount with a `currentPDF`, runs `PdfDocument.fromFile(file)` and iterates pages 1..N.
+2. For each page: `page.extract()` → `{ dimensions, textElements, classification, images }`.
+3. Post-process: every text element whose text appears in `classification.headers` is tagged `isBold: true, isHeader: true`.
+4. Push into `setPages([...])`.
+5. `buildObjects(pages)` flattens `pages[]` into `objects[]` (one pass, spacing-only paragraph grouping).
+6. Renders `<EditToolbar>` + `<SinglePageView pages={pages} objects={objects} onObjectsChange={...} />`.
+7. `onObjectsChange` callback keeps `editedObjectsRef` current — used by `handleDownload`.
+8. `handleDownload` builds the PDF from `editedObjectsRef.current` (live edited state), not `pages[]` (original parsed state).
+9. `handleSave` is currently a toast — no real persistence yet.
+
+---
+
+## SinglePageView — Three-Layer Architecture
+
+```
+Layer 1 — Document model (objects[])
+  Produced once by buildObjects(pages), then mutated by edit handlers.
+  Each block: { id, type, text, x, fontSize, pageIdx, lines[], isBold, isItalic, color }
+  Paragraph ids: "p0", "p1", …   Header/line ids: "t-{pageIdx}-{elIdx}"
+  Image ids: "img-{pageIdx}-bg" / "img-{pageIdx}-{objNum}"
+  Runtime blocks (Enter-split): "n0", "n1", …
+
+Layer 2 — Layout (layoutObjects, frontend/src/lib/layoutObjects.js)
+  Pure function → Map<id, {top,left,width,height}>
+  Single forward pass; cursorY monotonically increases (P2: non-overlap guaranteed).
+  Height resolution per block (priority order):
+    1. measuredHeights.get(id)  ← real DOM height from ResizeObserver (string key)
+    2. measureWrappedHeight(text, fontPx, colPx, ctx, cache)  ← canvas fallback (first paint)
+  Soft page separators emitted at pageIdx transitions; content flows past them.
+  Changing objects[k] cannot affect top(0..k-1)  ← P3 locality.
+
+Layer 3 — Render + edits (SinglePageView.jsx)
+  Each text block → <EditableBlock> (height:auto, no minHeight; width from layout).
+  Shared ResizeObserver fires on every browser-rewrap; writes DOM height to
+  measuredHeightsRef with STRING key (block.id). bumpHeightTick() → useMemo
+  recomputes layout → blocks below shift in the same frame.
+  EditableBlock.useLayoutEffect: writes model text to DOM only when NOT typing
+  (pendingText guard) so caret never resets during keystrokes.
+
+Edit handlers:
+  onInput  → pendingText.set(id, liveText); debounce 150ms → flushPending → setObjects
+  Backspace at offset>0 → browser handles; disarms merge guard
+  Backspace at offset 0, 1st press → arm mergeArmedRef (no merge yet)
+  Backspace at offset 0, 2nd consecutive press → merge with prev text block; setObjects
+  Enter → split at caret; new block inserted; caretIntentRef → useLayoutEffect places caret
+  Any other key / mousedown → disarm merge guard
+```
+
+## buildObjects — Document Model Builder (`frontend/src/lib/buildObjects.js`)
+
+Converts parsed `pages[]` → flat `Block[]`.
+
+**Paragraph grouping (spacing-only — matches PDFMiner.six default):**
+```
+gap = prev_baseline_y - curr_baseline_y   (positive because PDF y is top-down)
+if gap > PARA_BREAK_FACTOR × fontSize  →  new paragraph   (PARA_BREAK_FACTOR = 1.6)
+if |prevFontSize - currFontSize| > 1.5  →  new paragraph
+```
+The SDK's `groupIntoParagraphs` four-rule algorithm is intentionally NOT used here because rules 2–4 (Short Line, Indent, Hanging) produce one-block-per-line fragments on ragged-right text.
+
+**Header detection:**
+```
+isHeader = sdkSaysHeader  AND  text.length ≤ 60  AND  wordCount ≤ 8
+```
+Prevents long body sentences (> 8 words) being misclassified as headings via the SDK's centre-tolerance rule.
+
+**Key invariant:** all `block.id` values are **strings** so `dataset.id` (always a string in HTML) and `Map.get(block.id)` use the same key. Numeric ids caused a silent `measuredHeights` cache miss that broke ResizeObserver reflow.
 
 ---
 
@@ -604,11 +585,7 @@ Font used for all text: `StandardFonts.Helvetica`. Coordinates are used as-is (P
 - `getObject(bytes, pdfString, ref, returnBytes?)` — locates `N G obj … endobj` block by ref string
 - `extractValue(objStr, key)` — extracts the value for a dictionary key (handles refs and names)
 - `resolveLength(bytes, pdfString, objBytes)` — resolves `/Length` (may be an indirect ref)
-- `decompressStream(objBytes, length)` — extracts and inflates (pako) the stream
-
-### `pdfObjectReader` decompression note
-
-Uses `pako.inflate`. The stream start offset is detected by scanning for `\r\n` or `\n` after the `stream` keyword.
+- `decompressStream(objBytes, length)` — extracts and inflates (pako) the stream; auto-detects `\r\n` vs `\n` after the `stream` keyword.
 
 ### `pdfCMapParser.js`
 
@@ -619,14 +596,11 @@ Uses `pako.inflate`. The stream start offset is detected by scanning for `\r\n` 
 
 ### `pdfContentStreamTextProcessor.js`
 
-- `processContentStream(contentStream, fonts)` → `TextElement[]`
-- `decodePdfLiteralString(str, fontEntry)` → decoded string
-- `detectParasAndHeaders(elements, pageWidth)` → `Classification`
-- `groupIntoLines(elements, snapTolerance?)` → `TextElement[][]` ← **NEW**
-- `getDominantLineGap(lines)` → `number` ← **NEW**
-- `isParaBreak(prevLine, currLine, dominantGap, pageWidth)` → `boolean` ← **NEW**
-- `detectParagraphs(elements, pageWidth)` → `ParagraphResult[]` ← **NEW**
-- `buildParagraph(lines)` → `ParagraphResult` ← **NEW**
+- `processContentStream(decompressed, fonts)` → `TextElement[]`
+- `decodePdfLiteralString(token)` → decoded string
+- `groupIntoParagraphs(bodyLines)` → `Map<number, ParagraphBlock>`
+- `detectParasAndHeaders(textElements, pageWidth)` → `Classification`
+- `detectParagraphsFromElements(textElementsPerPage)` → `Array<{ paragraphIdx, lines: [{ pageIdx, elIdx, el }] }>` — cross-page paragraph grouping used by PDFViewer's Backspace handler. Breaks paragraphs when `prev.y − curr.y > prev.fontSize * 1.5`; page boundaries always start a new paragraph.
 
 ### `imageDecoder.js`
 
@@ -646,15 +620,16 @@ Single source of truth for all regex patterns. Always add new patterns here rath
 
 | Library | Version | Purpose |
 |---|---|---|
-| React | 18 | UI |
-| Vite | 5 | Dev server + bundler |
-| Tailwind CSS | 4 | Utility CSS |
-| DaisyUI | 5 | Component themes (30+ themes via `THEMES` constant) |
-| Zustand | 5 | Global state |
-| react-router-dom | 6 | Client-side routing |
-| pdf-lib | 1.17 | PDF re-generation for download |
-| lucide-react | 0.400 | Icons |
-| react-hot-toast | 2 | Toast notifications |
+| React | ^18.2 | UI |
+| Vite | ^5 | Dev server + bundler |
+| Tailwind CSS | ^4 (`@tailwindcss/vite`) | Utility CSS |
+| DaisyUI | ^5 | Component themes (30+ themes via `THEMES` constant) |
+| Zustand | ^5 | Global state |
+| react-router-dom | ^6 | Client-side routing |
+| pdf-lib | ^1.17 | PDF re-generation for download |
+| lucide-react | ^0.400 | Icons |
+| react-hot-toast | ^2.4 | Toast notifications |
+| axios | ^1.15 | (present in package.json; no current backend) |
 
 ---
 
@@ -665,7 +640,9 @@ Single source of truth for all regex patterns. Always add new patterns here rath
 node index.js TEST.pdf
 node index.js "Color bg.pdf"
 
-# Frontend dev server
+# Frontend dev server (from repo root with pnpm workspace, or from frontend/)
+pnpm --filter pdf-editor-frontend dev
+# or
 cd frontend && npm run dev
 # → http://localhost:5173
 ```
@@ -676,13 +653,14 @@ cd frontend && npm run dev
 
 1. **New parsing logic**: add a new file in the relevant `pdf-parser/src/` domain (`core/`, `text/`, `images/`), export from `pdf-parser/index.js`. Never put parsing logic in `PdfDocument.js` or `PdfPage.js` — those are adapter-only.
 2. **New regex**: add to `PDF_REGEX` in `pdfRegex.js`, don't define inline.
-3. **New store actions**: add to `usePDFStore.js` — always return a new `pages` array (immutable updates).
-4. **New toolbar controls**: add tool id to `EDITING_TOOLS` constant, add handling in `EditToolbar.jsx` + `PDFViewer.jsx`.
+3. **New store actions**: add to `usePDFStore.js`. Either return a new `pages` array yourself or delegate flow to `applyGlobalReflow` — never mutate `state.pages` in place.
+4. **New toolbar controls**: add tool id to `EDITING_TOOLS` constant, add handling in `EditToolbar.jsx`. If the control mutates a text element, route through a store action so the canvas re-renders automatically.
 5. **New image formats**: add a new decode path in `imageDecoder.js` following the FlateDecode/DCTDecode pattern.
-6. **`pdfSdk/` is gone**: the old `frontend/src/lib/pdfSdk/` barrel (`loader.js`, `textExtractor.js`, etc.) has been fully replaced by the `pdf-parser` npm package. Do not recreate it.
+6. **`pdfSdk/` is gone**: the old `frontend/src/lib/pdfSdk/` barrel has been fully replaced by the `pdf-parser` workspace package. Do not recreate it.
 7. **All exports from `pdf-parser` must be named** (not default) for tree-shaking.
 8. **Use `try/catch` around all decompression and decode operations**; emit `console.warn` rather than crashing.
-9. **Paragraph detection order**: always strip header elements (via `classifyText`) before calling `detectParagraphs`. Headers interleaved with body text corrupt `getDominantLineGap`.
+9. **Touching paragraph detection**: thresholds (`xthreshold`, `ythreshold`, `Multiplierz`) live as locals at the top of `groupIntoParagraphs`. Adjust them there — don't recompute from font metrics unless you're replacing the whole rule pipeline.
+10. **Touching `applyGlobalReflow`**: read the docstring inside the engine first. The most common foot-gun is treating `flowY` as cumulative across calls — it's always recomputed fresh from `el.y`. Persisted `flowY` keys are deliberately stripped on rebuild.
 
 ---
 
@@ -692,28 +670,33 @@ cd frontend && npm run dev
 
 1. Run `node index.js TEST.pdf` — confirm dimensions, text runs, and classification print without error.
 2. Run with `"Color bg.pdf"` — confirm background image is detected and page images are listed.
-3. Confirm image extraction falls back gracefully in Node (expected: `ReferenceError` on canvas ops, not a crash).
-4. Run `detectParagraphs` on a multi-paragraph test PDF — confirm `ParagraphResult[]` count matches visual paragraph count and no body lines bleed into adjacent paragraphs.
+3. Confirm image extraction falls back gracefully in Node (expected: `ReferenceError` on canvas ops, caught and logged, not a crash).
+4. Confirm `classification.paragraphs.size` matches visual paragraph count on a multi-paragraph test PDF.
 
 ### Before committing frontend changes:
 
-1. `cd frontend && npm run dev` — upload `TEST.pdf`, confirm pages render with correct aspect ratio.
+1. `pnpm --filter pdf-editor-frontend dev` — upload `TEST.pdf`, confirm pages render with correct aspect ratio.
 2. Text elements appear at visually correct positions (no Y-axis inversion artifacts).
 3. Background image fills the canvas behind text and page images.
-4. Click a text element → blue caret appears. Type a character → it is inserted correctly.
+4. Click a text element → blue caret appears. Type a character → it is inserted correctly. Type until line overflows → wrap to next line; keep typing until page overflows → new page is created and cursor lands on it.
 5. Bold / Italic toggle reflects in the rendered text and in the toolbar button state.
-6. Download produces a valid PDF (open in a PDF viewer to verify).
-7. No console errors on load (check for missing exports, pako decompression failures, or canvas errors).
+6. Backspace at line start joins lines; Backspace at page top jumps cursor to previous page's last element.
+7. Click an image → selection cursor / overlay appears. Drag a handle → on Apply, image resizes and text below reflows up/down accordingly.
+8. Download produces a valid PDF (open in a PDF viewer to verify).
+9. No console errors on load (check for missing exports, pako decompression failures, or canvas errors).
 
 ---
 
 ## Known Limitations / Future Work
 
-- **Text width estimation** is approximate (`text.length * 5.5` pts) — real width requires a font metrics lookup.
-- **Page tree**: `extractKidN` assumes a flat `/Kids` array (one level). Nested intermediate page nodes (uncommon) will fail.
+- **Text width estimation** for canvas-fallback measurement uses `font.length * 0.55 * fontSize`; real Helvetica metrics would be more accurate.
+- **Page tree**: `extractKidN` assumes a flat `/Kids` array. Nested intermediate page nodes (uncommon) will fail.
 - **Font rendering**: all text is displayed in `serif` (browser) and re-exported in `Helvetica` (pdf-lib). Original font faces are not preserved.
-- **Highlight tool**: UI exists but no highlight rendering is implemented yet.
+- **Page overflow in export**: if a paragraph grew past the original page bottom, lines are clipped at 48pt margin. True reflowing to the next page in the export is not yet implemented.
+- **Soft page boundaries in editor**: page separators are purely visual. Content that overflows a page boundary in the editor simply grows the tall canvas; it doesn't push text to the next logical page.
+- **Bold/italic/color from toolbar**: toolbar controls exist but are wired to the old per-element store model, not the new `objects[]` model in SinglePageView.
 - **Save button**: shows a toast but does not persist state between sessions.
-- **Only FlateDecode + DCTDecode** image filters are supported. JBIG2, JPX, CCITTFax will return `null`.
-- **Multi-column layout**: `detectParagraphs` runs on all elements together — two-column documents will produce incorrect paragraph groupings. Fix: cluster elements into x-range columns first, then run detection per column.
-- **Paragraph detection on scanned PDFs**: element density is too low for reliable geometry heuristics. Detect scan mode (very few elements per page area) and skip `detectParagraphs` entirely.
+- **Highlight / Underline / Notes tools**: UI exists but no rendering is implemented.
+- **Only FlateDecode + DCTDecode** image filters supported. JBIG2, JPX, CCITTFax return `null`.
+- **Multi-column layout**: spacing-only paragraph detection runs on all body lines together — two-column documents produce incorrect groupings.
+- **Scanned PDFs**: element density too low for reliable geometry heuristics.
