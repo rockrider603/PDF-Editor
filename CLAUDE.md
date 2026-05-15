@@ -12,12 +12,13 @@ A **fully browser-side PDF editor** — no server, no uploads, no backend. The u
 - Parse multi-page PDFs directly in the browser using a custom `pdf-parser` ESM SDK
 - Extract and reconstruct text elements with their PDF coordinates and font sizes
 - Detect and render background images and inline page images
-- Live in-browser text editing: type, delete, bold, italic, resize, recolor
-- Re-export the edited state to a downloadable PDF via `pdf-lib`
-- Paragraph detection from raw `TextElement[]` using geometry-based heuristics (no pilcrow markers — PDFs have no semantic paragraph structure)
-- Image selection + interactive resize (8 drag handles), with downstream content reflow
-- Cross-page text reflow on Enter/Backspace/Delete; greedy paragraph compaction on forward-delete
-- Type-overflow auto-wrap that pushes the wrapped tail to a new line (and to a new page if needed)
+- **Single-page continuous editing view** — all pages flow into one tall canvas with soft page-separator markers; no per-page canvas switching
+- Live in-browser text editing via per-block `contentEditable`; typing, Backspace, Enter all produce immediate visual reflow
+- **DOM-driven reflow** — a shared `ResizeObserver` on every editable block measures actual browser-rendered heights; layout positions downstream blocks accordingly without any debounce delay
+- **Three-layer editor architecture** — model (objects[]) → layout (layoutObjects pure fn) → render (absolute positioning from layout map)
+- Paragraph detection from raw `TextElement[]` using **spacing-only heuristics** (gap > 1.6 × fontSize = new paragraph) — no short-line / indent rules that fragment ragged-right body text
+- Header detection: SDK centre-tolerance check gated by ≤ 60 chars AND ≤ 8 words so long body lines are never misclassified as headings
+- Re-export the edited state to a downloadable PDF via `pdf-lib` (uses live edited objects, wraps text per-page)
 
 ---
 
@@ -484,22 +485,24 @@ The Bold/Italic icon buttons are disabled until a text element is selected (`act
 
 ## PDF Download (`handleDownload` in EditingPage)
 
-Uses `pdf-lib` to reconstruct a PDF from the current Zustand `pages` state:
+Uses `pdf-lib` to reconstruct a PDF from the **live edited objects[]** (not the stale parsed `pages[]`). `SinglePageView` notifies `EditingPage` via `onObjectsChange` callback on every model mutation; `EditingPage` stores the result in `editedObjectsRef`.
 
 ```
 PDFDocument.create()
-  → for each page in pages:
-      page = pdfDoc.addPage([dimensions.width, dimensions.height])
-      if background: page.drawImage(embeddedPng/Jpg, full page rect)
-      for each pageImage in images.pageImages:
-          page.drawImage at appearances[0] coordinates
-      for each textElement: page.drawText(el.text, { x, y, size, font: Helvetica, color })
+  → for each page n in pages:
+      pdfPage = pdfDoc.addPage([dimensions.width, dimensions.height])
+      draw background image (from editedObjects where type='image' and role='background', pageIdx=n)
+      draw inline images (from editedObjects where type='image' and role='image', pageIdx=n)
+      for each text block (paragraph/header/line) where pageIdx=n:
+          greedy-wrap block.text at colWidth (avgCharWidth = fontSize × 0.55)
+          drawText each wrapped line starting at block.y, advancing −lineHeight per line
+          clip at bottom margin (48 pt)
   → pdfDoc.save() → Blob → <a>.click()
 ```
 
-Font used for all text: `StandardFonts.Helvetica`. Color: hardcoded `rgb(0,0,0)` (the store's `el.color` is **not** yet wired into the download — only the live canvas honours it).
+Font: `StandardFonts.Helvetica`. Color: `rgb(0,0,0)`. Page dimensions from original `pages[n].dimensions`.
 
-Coordinates are used as-is (PDF origin = bottom-left matches `pdf-lib`'s coordinate system). If `pages` is empty but a `currentPDF` exists, the original file is downloaded as a fallback.
+**Page overflow in export**: if a grown paragraph's wrapped lines go below the page's bottom margin (48 pt) they are clipped. True page-overflow reflow (spilling to the next page) is a future enhancement.
 
 ---
 
@@ -509,8 +512,69 @@ Coordinates are used as-is (PDF origin = bottom-left matches `pdf-lib`'s coordin
 2. For each page: `page.extract()` → `{ dimensions, textElements, classification, images }`.
 3. Post-process: every text element whose text appears in `classification.headers` is tagged `isBold: true, isHeader: true`.
 4. Push into `setPages([...])`.
-5. Renders `<EditToolbar>` + `<PDFViewer pages={pages} />`.
-6. `handleDownload` and `handleSave` are owned here (Save is currently a toast only — no real persistence).
+5. `buildObjects(pages)` flattens `pages[]` into `objects[]` (one pass, spacing-only paragraph grouping).
+6. Renders `<EditToolbar>` + `<SinglePageView pages={pages} objects={objects} onObjectsChange={...} />`.
+7. `onObjectsChange` callback keeps `editedObjectsRef` current — used by `handleDownload`.
+8. `handleDownload` builds the PDF from `editedObjectsRef.current` (live edited state), not `pages[]` (original parsed state).
+9. `handleSave` is currently a toast — no real persistence yet.
+
+---
+
+## SinglePageView — Three-Layer Architecture
+
+```
+Layer 1 — Document model (objects[])
+  Produced once by buildObjects(pages), then mutated by edit handlers.
+  Each block: { id, type, text, x, fontSize, pageIdx, lines[], isBold, isItalic, color }
+  Paragraph ids: "p0", "p1", …   Header/line ids: "t-{pageIdx}-{elIdx}"
+  Image ids: "img-{pageIdx}-bg" / "img-{pageIdx}-{objNum}"
+  Runtime blocks (Enter-split): "n0", "n1", …
+
+Layer 2 — Layout (layoutObjects, frontend/src/lib/layoutObjects.js)
+  Pure function → Map<id, {top,left,width,height}>
+  Single forward pass; cursorY monotonically increases (P2: non-overlap guaranteed).
+  Height resolution per block (priority order):
+    1. measuredHeights.get(id)  ← real DOM height from ResizeObserver (string key)
+    2. measureWrappedHeight(text, fontPx, colPx, ctx, cache)  ← canvas fallback (first paint)
+  Soft page separators emitted at pageIdx transitions; content flows past them.
+  Changing objects[k] cannot affect top(0..k-1)  ← P3 locality.
+
+Layer 3 — Render + edits (SinglePageView.jsx)
+  Each text block → <EditableBlock> (height:auto, no minHeight; width from layout).
+  Shared ResizeObserver fires on every browser-rewrap; writes DOM height to
+  measuredHeightsRef with STRING key (block.id). bumpHeightTick() → useMemo
+  recomputes layout → blocks below shift in the same frame.
+  EditableBlock.useLayoutEffect: writes model text to DOM only when NOT typing
+  (pendingText guard) so caret never resets during keystrokes.
+
+Edit handlers:
+  onInput  → pendingText.set(id, liveText); debounce 150ms → flushPending → setObjects
+  Backspace at offset>0 → browser handles; disarms merge guard
+  Backspace at offset 0, 1st press → arm mergeArmedRef (no merge yet)
+  Backspace at offset 0, 2nd consecutive press → merge with prev text block; setObjects
+  Enter → split at caret; new block inserted; caretIntentRef → useLayoutEffect places caret
+  Any other key / mousedown → disarm merge guard
+```
+
+## buildObjects — Document Model Builder (`frontend/src/lib/buildObjects.js`)
+
+Converts parsed `pages[]` → flat `Block[]`.
+
+**Paragraph grouping (spacing-only — matches PDFMiner.six default):**
+```
+gap = prev_baseline_y - curr_baseline_y   (positive because PDF y is top-down)
+if gap > PARA_BREAK_FACTOR × fontSize  →  new paragraph   (PARA_BREAK_FACTOR = 1.6)
+if |prevFontSize - currFontSize| > 1.5  →  new paragraph
+```
+The SDK's `groupIntoParagraphs` four-rule algorithm is intentionally NOT used here because rules 2–4 (Short Line, Indent, Hanging) produce one-block-per-line fragments on ragged-right text.
+
+**Header detection:**
+```
+isHeader = sdkSaysHeader  AND  text.length ≤ 60  AND  wordCount ≤ 8
+```
+Prevents long body sentences (> 8 words) being misclassified as headings via the SDK's centre-tolerance rule.
+
+**Key invariant:** all `block.id` values are **strings** so `dataset.id` (always a string in HTML) and `Map.get(block.id)` use the same key. Numeric ids caused a silent `measuredHeights` cache miss that broke ResizeObserver reflow.
 
 ---
 
@@ -625,12 +689,14 @@ cd frontend && npm run dev
 
 ## Known Limitations / Future Work
 
-- **Text width estimation** is approximate (`text.length * 5.5` pts in the SDK, `canvas.measureText` in the frontend) — real width requires a proper font metrics lookup.
-- **Page tree**: `extractKidN` assumes a flat `/Kids` array (one level). Nested intermediate page nodes (uncommon) will fail.
+- **Text width estimation** for canvas-fallback measurement uses `font.length * 0.55 * fontSize`; real Helvetica metrics would be more accurate.
+- **Page tree**: `extractKidN` assumes a flat `/Kids` array. Nested intermediate page nodes (uncommon) will fail.
 - **Font rendering**: all text is displayed in `serif` (browser) and re-exported in `Helvetica` (pdf-lib). Original font faces are not preserved.
-- **Highlight / Underline / Notes tools**: UI exists but no rendering is implemented yet.
+- **Page overflow in export**: if a paragraph grew past the original page bottom, lines are clipped at 48pt margin. True reflowing to the next page in the export is not yet implemented.
+- **Soft page boundaries in editor**: page separators are purely visual. Content that overflows a page boundary in the editor simply grows the tall canvas; it doesn't push text to the next logical page.
+- **Bold/italic/color from toolbar**: toolbar controls exist but are wired to the old per-element store model, not the new `objects[]` model in SinglePageView.
 - **Save button**: shows a toast but does not persist state between sessions.
-- **Download ignores `el.color`** — the store mutation works on canvas but the pdf-lib pass hardcodes black. Fix: parse `el.color` into `rgb(...)` and thread through `page.drawText`.
-- **Only FlateDecode + DCTDecode** image filters are supported. JBIG2, JPX, CCITTFax will return `null`.
-- **Multi-column layout**: `groupIntoParagraphs` runs on all body lines together — two-column documents will produce incorrect groupings. Fix: cluster body lines into x-range columns first, then run detection per column.
-- **Scanned PDFs**: element density is too low for reliable geometry heuristics. There's no scan-mode detection; results will be nonsensical.
+- **Highlight / Underline / Notes tools**: UI exists but no rendering is implemented.
+- **Only FlateDecode + DCTDecode** image filters supported. JBIG2, JPX, CCITTFax return `null`.
+- **Multi-column layout**: spacing-only paragraph detection runs on all body lines together — two-column documents produce incorrect groupings.
+- **Scanned PDFs**: element density too low for reliable geometry heuristics.

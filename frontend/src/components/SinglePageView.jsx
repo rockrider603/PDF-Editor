@@ -38,12 +38,18 @@ const SinglePageView = ({
   pages = [],
   objects: incomingObjects = [],
   isLoading = false,
+  onObjectsChange = null,
 }) => {
   // ── Layer 1: model ────────────────────────────────────────────────────────
   const [objects, setObjects] = useState(incomingObjects);
   useEffect(() => {
     setObjects(incomingObjects);
   }, [incomingObjects]);
+  // Notify parent whenever the model changes so the download always has
+  // the latest edited text.
+  useEffect(() => {
+    if (onObjectsChange) onObjectsChange(objects);
+  }, [objects, onObjectsChange]);
 
   // ── Refs (non-render state) ───────────────────────────────────────────────
   const idCounter = useRef(0);
@@ -211,6 +217,30 @@ const SinglePageView = ({
     caretIntentRef.current = null;
   });
 
+  // ── Debug helpers ─────────────────────────────────────────────────────────
+  const dbgBlock = (label, block) => {
+    if (!block) return;
+    const preview = (block.text ?? '').slice(0, 60).replace(/\n/g, '↵');
+    console.group(`[PDF-Editor] ${label}  id=${block.id}  type=${block.type}`);
+    console.log('text (model)  :', `"${preview}${block.text?.length > 60 ? '…' : ''}"`);
+    console.log('textLength    :', block.text?.length ?? 0);
+    console.log('lineCount     :', block.lines?.length ?? '(runtime block)');
+    console.log('fontSize      :', block.fontSize);
+    console.log('x             :', block.x);
+    console.log('pageIdx       :', block.pageIdx);
+    const rect = layout.get(block.id);
+    if (rect) {
+      console.log('layout rect   :', `top=${rect.top.toFixed(1)}  h=${rect.height.toFixed(1)}`);
+    }
+    const domH = measuredHeightsRef.current.get(block.id);
+    if (domH !== undefined) {
+      console.log('DOM height    :', domH.toFixed(1));
+    } else {
+      console.warn('DOM height    : NOT MEASURED YET (id type mismatch?)');
+    }
+    console.groupEnd();
+  };
+
   // ── Typing debounce ───────────────────────────────────────────────────────
   const flushPending = () => {
     if (pendingTimerRef.current) {
@@ -226,7 +256,19 @@ const SinglePageView = ({
       const next = prev.map((b) => {
         if (snapshot.has(b.id) && snapshot.get(b.id) !== b.text) {
           changed = true;
-          return { ...b, text: snapshot.get(b.id) };
+          const liveText = snapshot.get(b.id);
+          // Show a slice around the first diff so insertions in the middle are visible.
+          const oldT = b.text ?? '';
+          const newT = liveText ?? '';
+          let diffAt = 0;
+          while (diffAt < oldT.length && diffAt < newT.length && oldT[diffAt] === newT[diffAt]) diffAt++;
+          const ctx = 15;
+          const oldSnip = oldT.slice(Math.max(0, diffAt - ctx), diffAt + ctx);
+          const newSnip = newT.slice(Math.max(0, diffAt - ctx), diffAt + ctx);
+          console.log(
+            `[PDF-Editor] FLUSH  id=${b.id}  chars ${oldT.length}→${newT.length}  diff@${diffAt}  "…${oldSnip}…" → "…${newSnip}…"`
+          );
+          return { ...b, text: liveText };
         }
         return b;
       });
@@ -266,6 +308,12 @@ const SinglePageView = ({
     const merged = prevText + gap + curText;
     const seamOffset = prevText.length + gap.length;
 
+    console.group('[PDF-Editor] BACKSPACE-MERGE');
+    console.log('removed  :', `id=${cur.id}  "${curText.slice(0, 40)}"`);
+    console.log('merged → :', `id=${prev.id}  "${merged.slice(0, 60)}"`);
+    dbgBlock('prev BEFORE merge', prev);
+    console.groupEnd();
+
     pendingTextRef.current.delete(cur.id);
     pendingTextRef.current.delete(prev.id);
 
@@ -290,6 +338,15 @@ const SinglePageView = ({
     const after = text.slice(offset).replace(/^\s+/, "");
 
     const newId = `n${idCounter.current++}`;
+
+    console.group(`[PDF-Editor] ENTER-SPLIT  id=${cur.id}  at offset=${offset}`);
+    console.log('original text :', `"${text.slice(0, 60)}"`);
+    console.log('before (A)    :', `"${before.slice(0, 40)}"`);
+    console.log('after  (B)    :', `"${after.slice(0, 40)}"`);
+    console.log('new block id  :', newId);
+    dbgBlock('paragraph BEFORE split', cur);
+    console.groupEnd();
+
     pendingTextRef.current.delete(cur.id);
 
     setObjects((arr) => {
@@ -541,6 +598,26 @@ const EditableBlock = ({
   const isHeader = block.type === "header";
   const fontPx = (block.fontSize ?? 12) * scale;
 
+  const handleFocus = () => {
+    // Log the paragraph state the moment the user clicks into it.
+    const el = divRef.current;
+    const domText = el?.textContent ?? '';
+    const modelText = block.text ?? '';
+    const domH = measuredHeightsRef?.current?.get(block.id);
+    console.group(`[PDF-Editor] FOCUS  id=${block.id}  type=${block.type}`);
+    console.log('model text :', `"${modelText.slice(0, 70)}${modelText.length > 70 ? '…' : ''}"`);
+    console.log('DOM text   :', `"${domText.slice(0, 70)}${domText.length > 70 ? '…' : ''}"`);
+    console.log('model === DOM :', modelText === domText);
+    console.log('lineCount (original lines[]) :', block.lines?.length ?? '(runtime block)');
+    console.log('fontSize   :', block.fontSize, '  x:', block.x, '  pageIdx:', block.pageIdx);
+    if (domH !== undefined) {
+      console.log('DOM height (measured):', domH.toFixed(1), 'px');
+    } else {
+      console.warn('DOM height: not yet in measuredHeights — ResizeObserver may not have fired');
+    }
+    console.groupEnd();
+  };
+
   return (
     <div
       ref={handleRef}
@@ -548,6 +625,7 @@ const EditableBlock = ({
       data-type={block.type}
       contentEditable
       suppressContentEditableWarning
+      onFocus={handleFocus}
       onInput={(e) => onInput(e, block.id)}
       onKeyDown={(e) => onKeyDown(e, block.id)}
       style={{

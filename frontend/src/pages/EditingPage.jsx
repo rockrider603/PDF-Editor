@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import EditToolbar from "../components/EditToolbar";
@@ -6,7 +6,7 @@ import SinglePageView from "../components/SinglePageView";
 import { usePDFStore } from "../store/usePDFStore";
 import { PdfDocument } from "pdf-parser";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-import { buildObjects, logObjects } from "../lib/buildObjects";
+import { buildObjects } from "../lib/buildObjects";
 
 const EditingPage = () => {
   const navigate = useNavigate();
@@ -22,6 +22,11 @@ const EditingPage = () => {
   const [selectedTool, setSelectedTool] = useState(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [parseError, setParseError] = useState(null);
+
+  // Live reference to the edited objects[] maintained by SinglePageView.
+  // SinglePageView calls onObjectsChange(objs) on every model mutation so
+  // this ref always holds the latest user-edited state for download.
+  const editedObjectsRef = useRef([]);
 
   // ── Redirect if no PDF is in state ─────────────────────────────────────────
   useEffect(() => {
@@ -99,15 +104,29 @@ const EditingPage = () => {
   // SinglePageView is rendering.
   const objects = useMemo(() => buildObjects(pages), [pages]);
 
-  useEffect(() => {
-    if (objects.length > 0) logObjects(objects);
-  }, [objects]);
+  // Removed: logObjects(objects) — per-paragraph debug logs are now in
+  // SinglePageView (touch any paragraph to see its diagnostics).
 
-  // ── Download ────────────────────────────────────────────────────────────────
+  // ── Download — builds PDF from the live edited objects[], not stale pages[] ──
+  //
+  // Architecture:
+  //   objects[]      — edited blocks with current text (from SinglePageView)
+  //   pages[]        — original parsed data, used only for page dimensions / images
+  //
+  // For each page we:
+  //   1. Draw background + inline images from pages[n] (images are not editable).
+  //   2. Walk text objects (paragraph/header/line) whose pageIdx === n.
+  //   3. Greedy-wrap each block's text at the column width using a char-width
+  //      estimate (Helvetica ≈ 0.55 × fontSize per character), then drawText
+  //      one PDF line at a time starting from block.y (the topmost PDF y of
+  //      the block's original first line), descending by lineHeight.
+  //   4. If wrapped lines go past the bottom margin, overflow is clipped.
+  //      (True page-overflow requires a more complex layout engine — v2.)
   const handleDownload = async () => {
+    const editedObjects = editedObjectsRef.current;
+
     if (!pages || pages.length === 0) {
       if (currentPDF) {
-        // Fallback to original
         const url = URL.createObjectURL(currentPDF);
         const a = document.createElement("a");
         a.href = url;
@@ -125,64 +144,98 @@ const EditingPage = () => {
       const pdfDoc = await PDFDocument.create();
       const helveticaFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-      for (const pageData of pages) {
-        const { dimensions, textElements, images } = pageData;
-        const page = pdfDoc.addPage([dimensions.width, dimensions.height]);
+      // Helper: greedy word-wrap in PDF points.
+      // Returns an array of lines (strings).
+      const wrapText = (text, fontSize, colWidthPt) => {
+        const avgCharWidth = fontSize * 0.55; // Helvetica rough average
+        const words = (text ?? "").split(/\s+/).filter(Boolean);
+        const lines = [];
+        let cur = "";
+        for (const word of words) {
+          const candidate = cur.length ? cur + " " + word : word;
+          if (candidate.length * avgCharWidth > colWidthPt && cur.length) {
+            lines.push(cur);
+            cur = word;
+          } else {
+            cur = candidate;
+          }
+        }
+        if (cur) lines.push(cur);
+        return lines.length ? lines : [""];
+      };
 
-        // Draw background
+      const MARGIN_PT = 48;
+
+      for (let pageIdx = 0; pageIdx < pages.length; pageIdx++) {
+        const pageData = pages[pageIdx];
+        const { dimensions, images } = pageData;
+        const pdfPage = pdfDoc.addPage([dimensions.width, dimensions.height]);
+
+        // ── Background image ───────────────────────────────────────────────
         if (images?.background?.dataUrl) {
           const bgData = images.background.dataUrl;
-          let embeddedImage;
-          if (bgData.includes("image/png")) {
-            embeddedImage = await pdfDoc.embedPng(bgData);
-          } else if (bgData.includes("image/jpeg") || bgData.includes("image/jpg")) {
-            embeddedImage = await pdfDoc.embedJpg(bgData);
-          }
-          if (embeddedImage) {
-            page.drawImage(embeddedImage, {
-              x: 0,
-              y: 0,
-              width: dimensions.width,
-              height: dimensions.height,
+          let embedded;
+          if (bgData.includes("image/png")) embedded = await pdfDoc.embedPng(bgData);
+          else if (bgData.includes("image/jpeg") || bgData.includes("image/jpg"))
+            embedded = await pdfDoc.embedJpg(bgData);
+          if (embedded)
+            pdfPage.drawImage(embedded, {
+              x: 0, y: 0, width: dimensions.width, height: dimensions.height,
             });
-          }
         }
 
-        // Draw page images
-        if (images?.pageImages) {
-          for (const img of images.pageImages) {
-            const imgData = img.dataUrl;
-            if (!imgData) continue;
-            let embeddedImage;
-            if (imgData.includes("image/png")) {
-              embeddedImage = await pdfDoc.embedPng(imgData);
-            } else if (imgData.includes("image/jpeg") || imgData.includes("image/jpg")) {
-              embeddedImage = await pdfDoc.embedJpg(imgData);
-            }
-            if (embeddedImage) {
-              const ap = img.appearances?.[0];
-              if (ap) {
-                page.drawImage(embeddedImage, {
-                  x: ap.x || 0,
-                  y: ap.y || 0,
-                  width: ap.renderedWidth || 100,
-                  height: ap.renderedHeight || 100,
-                });
-              }
-            }
-          }
+        // ── Inline images ──────────────────────────────────────────────────
+        const imgObjects = editedObjects.filter(
+          (b) => b.type === "image" && b.role !== "background" && b.pageIdx === pageIdx
+        );
+        for (const imgObj of imgObjects) {
+          if (!imgObj.dataUrl) continue;
+          let embedded;
+          if (imgObj.dataUrl.includes("image/png")) embedded = await pdfDoc.embedPng(imgObj.dataUrl);
+          else if (imgObj.dataUrl.includes("image/jpeg") || imgObj.dataUrl.includes("image/jpg"))
+            embedded = await pdfDoc.embedJpg(imgObj.dataUrl);
+          if (embedded)
+            pdfPage.drawImage(embedded, {
+              x: imgObj.x ?? 0,
+              y: imgObj.y ?? 0,
+              width: imgObj.renderedWidth ?? 100,
+              height: imgObj.renderedHeight ?? 100,
+            });
         }
 
-        // Draw text
-        if (textElements) {
-          for (const el of textElements) {
-            page.drawText(el.text, {
-              x: el.x || 0,
-              y: el.y || 0,
-              size: el.fontSize || 12,
-              font: helveticaFont,
-              color: rgb(0, 0, 0),
-            });
+        // ── Text blocks ────────────────────────────────────────────────────
+        // Use edited objects for this page, preserving document order.
+        const textObjects = editedObjects.filter(
+          (b) =>
+            (b.type === "paragraph" || b.type === "header" || b.type === "line") &&
+            b.pageIdx === pageIdx
+        );
+
+        for (const block of textObjects) {
+          const fontSize = block.fontSize ?? 12;
+          const x = block.x ?? MARGIN_PT;
+          const colWidth = Math.max(50, dimensions.width - x - MARGIN_PT);
+          const lineHeight = fontSize * 1.2;
+
+          // Starting y: first line of original block (PDF bottom-left origin).
+          // For runtime blocks (Enter-split), fall back to estimating from
+          // the previous line (lines[] is empty, y comes from original block).
+          const startY = block.lines?.[0]?.y ?? block.y ?? dimensions.height - MARGIN_PT - fontSize;
+          const wrappedLines = wrapText(block.text, fontSize, colWidth);
+
+          let pdfY = startY;
+          for (const line of wrappedLines) {
+            if (pdfY < MARGIN_PT) break; // clip at bottom margin
+            try {
+              pdfPage.drawText(line, {
+                x,
+                y: pdfY,
+                size: fontSize,
+                font: helveticaFont,
+                color: rgb(0, 0, 0),
+              });
+            } catch (_) { /* skip problematic glyphs */ }
+            pdfY -= lineHeight;
           }
         }
       }
@@ -260,6 +313,7 @@ const EditingPage = () => {
               pages={pages}
               objects={objects}
               isLoading={isLoading}
+              onObjectsChange={(objs) => { editedObjectsRef.current = objs; }}
             />
           )}
         </div>

@@ -101,12 +101,33 @@ export function buildObjects(pages = []) {
     const PARA_BREAK_FACTOR = 1.6; // gap > 1.6 × fontSize ⇒ new paragraph
     const FONT_SIZE_TOLERANCE = 1.5; // pt
 
-    // Partition body vs header up front (headers are emitted as their own
-    // blocks regardless of spacing).
+    // Partition body vs header.
+    //
+    // The SDK's centre-tolerance rule fires on long body lines whose
+    // estimated centre happens to fall within ±40 pt of the page centre.
+    // We add a length guard: a line must be SHORT to qualify as a heading
+    // (real headings are typically ≤ 10 words / ≤ 60 chars; a 90-char
+    // body sentence is never a heading).
+    //
+    // Header guard: the SDK's centre-tolerance fires on long body sentences
+    // whose estimated centre happens to fall near the page centre. Real
+    // headings are SHORT phrases. We require BOTH:
+    //   - ≤ MAX_HEADER_CHARS characters  (excludes sentences ≥ 8 words)
+    //   - ≤ MAX_HEADER_WORDS words        (direct word-count guard)
+    // "Hello World" (2w, 11c) → header ✓
+    // "Chapter 1: Introduction" (3w, 23c) → header ✓
+    // "metus euismod, consectetur libero eget, tempor est." (9w, 51c) → body ✓
+    const MAX_HEADER_CHARS = 60;
+    const MAX_HEADER_WORDS = 8;
+
     const headers = [];
     const bodyLines = [];
     textElements.forEach((el, elIdx) => {
-      const isHeader = el.isHeader || headerTexts.has(el.text);
+      const sdkSaysHeader = el.isHeader || headerTexts.has(el.text);
+      const txt = (el.text ?? '').trim();
+      const words = txt.split(/\s+/).filter(Boolean);
+      const isShort = txt.length <= MAX_HEADER_CHARS && words.length <= MAX_HEADER_WORDS;
+      const isHeader = sdkSaysHeader && isShort;
       if (isHeader) headers.push({ el, elIdx });
       else bodyLines.push({ el, elIdx });
     });

@@ -297,9 +297,7 @@ export const usePDFStore = create((set) => ({
     const newPages = [...state.pages];
     const page = { ...newPages[pageIdx] };
     const elements = [...page.textElements];
-    console.log(elements);
     const currentEl = elements[elIdx] || {};
-    console.log(currentEl);
     if (typeof updates === 'string') {
       elements[elIdx] = { ...currentEl, text: updates };
     } else {
@@ -311,8 +309,6 @@ export const usePDFStore = create((set) => ({
         elements[elIdx].isItalic = true;
       }
     }
-    console.log(elements[elIdx]);
-    console.log(elements);
     page.textElements = elements;
     newPages[pageIdx] = page;
     return { pages: newPages };
