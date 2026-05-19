@@ -21,7 +21,7 @@
 
 const TOP_MARGIN_PX = 48;
 const BLOCK_GAP_PX = 8;
-const SEPARATOR_HEIGHT_PX = 32;
+const SEPARATOR_HEIGHT_PX = 0;
 const LINE_HEIGHT_FACTOR = 1.2;
 const RIGHT_MARGIN_PDF_PT = 48;
 const MIN_COLUMN_PDF_PT = 60;
@@ -108,6 +108,28 @@ export function measureWrappedHeight(text, fontPx, columnPx, ctx, cache) {
  *   totalHeight: number,
  * }}
  */
+export const imageSizeOverrides = new Map();
+
+export function overrideImageSize(id, width, height) {
+  imageSizeOverrides.set(id, { width, height });
+}
+
+export function updateImageRect(block, scale, layout) {
+  if (!imageSizeOverrides.has(block.id)) return;
+  const currentRect = layout.get(block.id);
+  if (!currentRect) return;
+
+  const override = imageSizeOverrides.get(block.id);
+  const newW = override.width * scale;
+  const newH = override.height * scale;
+
+  layout.set(block.id, {
+    ...currentRect,
+    width: newW,
+    height: newH
+  });
+}
+
 export function layoutObjects({
   objects,
   scale,
@@ -155,28 +177,38 @@ export function layoutObjects({
     }
 
     if (block.type === 'image') {
-      // Anchored at original page-relative top-left. May leave an empty band
-      // above it if preceding text shrank, or push cursorY further down.
       const pageStart = pageStartCursorY.get(block.pageIdx);
       const pageHeight = block.pageHeight ?? 792;
       const originalTopPx =
         (pageHeight - block.y - block.renderedHeight) * scale;
       const anchoredTop = pageStart + originalTopPx;
-      const w = block.renderedWidth * scale;
-      const h = block.renderedHeight * scale;
+      const effectiveTop = Math.max(anchoredTop, cursorY);
+
+      let w = 0, h = 0;
+
+      if (imageSizeOverrides.has(block.id)) {
+        const override = imageSizeOverrides.get(block.id);
+        w = override.width;
+        h = override.height;
+      } else {
+        w = block.renderedWidth;
+        h = block.renderedHeight;
+      }
+
+      w = w * scale;
+      h = h * scale;
 
       layout.set(block.id, {
-        top: anchoredTop,
+        top: effectiveTop,
         left: block.x * scale,
         width: w,
         height: h,
       });
 
-      cursorY = Math.max(cursorY, anchoredTop + h + BLOCK_GAP_PX);
+      cursorY = effectiveTop + h + BLOCK_GAP_PX;
       prevBlockId = block.id;
       continue;
     }
-
     // Text block (paragraph / header / line).
     const fontPx = (block.fontSize ?? 12) * scale;
     const pageWidthPt =

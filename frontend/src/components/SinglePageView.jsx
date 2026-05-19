@@ -8,7 +8,8 @@ import React, {
 } from "react";
 import { Loader2 } from "lucide-react";
 import { CANVAS_WIDTH } from "./pdfConstants";
-import { layoutObjects } from "../lib/layoutObjects";
+import { layoutObjects, overrideImageSize, updateImageRect } from "../lib/layoutObjects";
+import { usePDFStore } from "../store/usePDFStore";
 
 // Three-layer architecture:
 //   Layer 1  Document model — `objects[]` (React state, mirrored from props)
@@ -33,6 +34,7 @@ import { layoutObjects } from "../lib/layoutObjects";
 const DEFAULT_PAGE_WIDTH_PT = 612;
 const TYPING_DEBOUNCE_MS = 150;
 const TEXT_TYPES = new Set(["paragraph", "header", "line"]);
+const IMAGE_TYPES = new Set(["image"]);
 
 const SinglePageView = ({
   pages = [],
@@ -65,6 +67,7 @@ const SinglePageView = ({
   // to allocate a new Map on every observer fire.
   const measuredHeightsRef = useRef(new Map());
   const [heightTick, bumpHeightTick] = useReducer((n) => n + 1, 0);
+  const [layoutTick, bumpLayoutTick] = useReducer((n) => n + 1, 0);
   const resizeObserverRef = useRef(null);
   // 2-press-to-merge: armed when a Backspace at offset 0 has been seen and
   // no other input has happened since. Disarmed by any other key, click, or
@@ -162,12 +165,13 @@ const SinglePageView = ({
     // heightTick is the dep that fires when ResizeObserver wrote to
     // measuredHeightsRef. We can't depend on the Map itself (identity is
     // stable) so the tick is the trigger.
-    [objects, scale, pageWidthsByIdx, heightTick]
+    [objects, scale, pageWidthsByIdx, heightTick, layoutTick]
   );
 
   // ── Caret helpers ─────────────────────────────────────────────────────────
   const placeCaret = (el, pos) => {
     if (!el) return;
+    console.log(el);
     el.focus();
     const sel = window.getSelection();
     if (!sel) return;
@@ -437,6 +441,165 @@ const SinglePageView = ({
     );
   }
 
+  const ImageBlock = ({ block, rect, objects, scale, forceLayout }) => {
+    const [imageSize, setImageSize] = useState({ width: rect.width, height: rect.height });
+    const [isSelected, setIsSelected] = useState(false);
+
+    // Ref keeps the latest size so the mouseup closure is never stale.
+    const liveSizeRef = useRef({ width: rect.width, height: rect.height });
+    const draggingRef = useRef(false);
+
+    // Sync from layout rect when NOT mid-drag (e.g. after forceLayout settles).
+    useEffect(() => {
+      if (!draggingRef.current) {
+        const s = { width: rect.width, height: rect.height };
+        setImageSize(s);
+        liveSizeRef.current = s;
+      }
+    }, [rect.width, rect.height]);
+
+    const containerRef = useRef(null);
+    const imgRef = useRef(null);
+
+    // ── Resize handler factory ──────────────────────────────────────────────
+    // mode: 'se' = corner (W + H),  'e' = right-middle (W only),  's' = bottom-middle (H only)
+    const makeResizeHandler = (mode) => (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startW = liveSizeRef.current.width;
+      const startH = liveSizeRef.current.height;
+      draggingRef.current = true;
+
+      const onMove = (mv) => {
+        const dx = mv.clientX - startX;
+        const dy = mv.clientY - startY;
+        const newW = mode === 's' ? startW : Math.max(20, startW + dx);
+        const newH = mode === 'e' ? startH : Math.max(20, startH + dy);
+        const next = { width: newW, height: newH };
+        liveSizeRef.current = next;
+        setImageSize(next);           // green border follows instantly
+      };
+
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        draggingRef.current = false;
+
+        const { width: finalW, height: finalH } = liveSizeRef.current;
+        // Commit in PDF-point space so the layout engine stores the override.
+        overrideImageSize(block.id, finalW / scale, finalH / scale);
+        // Re-run layout — cursorY shifts push / pull every block below.
+        forceLayout();
+      };
+
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    };
+
+    // ── Click zones (left 30% / right 30% → caret, middle 40% → select) ───
+    const handleContainerClick = (e) => {
+      const canvasRect = e.currentTarget.closest("#pdf-single-canvas").getBoundingClientRect();
+      const clickX = e.clientX - canvasRect.left;
+      const leftside  = rect.left + 0.3 * rect.width;
+      const rightside = rect.left + 0.7 * rect.width;
+
+      if (clickX < leftside) {
+        setIsSelected(false);
+        if (containerRef.current && imgRef.current) {
+          containerRef.current.focus();
+          const sel = window.getSelection();
+          const range = document.createRange();
+          range.setStartBefore(imgRef.current);
+          range.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      } else if (clickX >= rightside) {
+        setIsSelected(false);
+        if (containerRef.current && imgRef.current) {
+          containerRef.current.focus();
+          const sel = window.getSelection();
+          const range = document.createRange();
+          range.setStartAfter(imgRef.current);
+          range.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      } else {
+        setIsSelected(true);
+      }
+    };
+
+    const isBg = block.role === "background";
+
+    // Shared style for the 8×8 green squares.
+    const handleStyle = {
+      position: "absolute",
+      width: "8px",
+      height: "8px",
+      background: "green",
+      borderRadius: "1px",
+    };
+
+    return (
+      <div
+        ref={containerRef}
+        contentEditable
+        suppressContentEditableWarning
+        onClick={handleContainerClick}
+        style={{
+          position: "absolute",
+          left: rect.left,
+          top: rect.top,
+          width: imageSize.width,
+          height: imageSize.height,
+          zIndex: isBg ? 0 : 1,
+          outline: "none",
+          whiteSpace: "nowrap",
+          cursor: "text",
+          boxSizing: "border-box",
+          border: isSelected ? "2px solid green" : "none",
+        }}
+      >
+        <img
+          ref={imgRef}
+          src={block.dataUrl}
+          alt={isBg ? "PDF background" : "PDF image"}
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: isBg ? "fill" : "contain",
+            pointerEvents: isBg ? "none" : "auto",
+            userSelect: "none",
+            display: "block",
+          }}
+          draggable={false}
+        />
+        {isSelected && (
+          <>
+            {/* BOTTOM-RIGHT corner → width + height */}
+            <div
+              onMouseDown={makeResizeHandler('se')}
+              style={{ ...handleStyle, right: "-4px", bottom: "-4px", cursor: "nwse-resize" }}
+            />
+            {/* RIGHT-MIDDLE → width only */}
+            <div
+              onMouseDown={makeResizeHandler('e')}
+              style={{ ...handleStyle, right: "-4px", top: "50%", transform: "translateY(-50%)", cursor: "ew-resize" }}
+            />
+            {/* BOTTOM-MIDDLE → height only */}
+            <div
+              onMouseDown={makeResizeHandler('s')}
+              style={{ ...handleStyle, bottom: "-4px", left: "50%", transform: "translateX(-50%)", cursor: "ns-resize" }}
+            />
+          </>
+        )}
+      </div>
+    );
+  };
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div
@@ -461,64 +624,22 @@ const SinglePageView = ({
           borderRadius: 8,
         }}
       >
-        {separators.map((sep, i) => (
-          <div
-            key={`sep-${i}`}
-            style={{
-              position: "absolute",
-              left: 0,
-              right: 0,
-              top: sep.top,
-              height: 32,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              pointerEvents: "none",
-              background:
-                "repeating-linear-gradient(90deg, #d1d5db 0 6px, transparent 6px 12px)",
-              backgroundSize: "12px 1px",
-              backgroundRepeat: "no-repeat",
-              backgroundPosition: "center",
-            }}
-          >
-            <div
-              style={{
-                background: "#9ca3af",
-                color: "white",
-                fontSize: 11,
-                padding: "2px 10px",
-                borderRadius: 999,
-                letterSpacing: 0.5,
-              }}
-            >
-              Page {sep.fromPage + 1} / {sep.toPage + 1}
-            </div>
-          </div>
-        ))}
+
+
 
         {objects.map((block) => {
           const rect = layout.get(block.id);
           if (!rect) return null;
 
           if (block.type === "image") {
-            const isBg = block.role === "background";
             return (
-              <img
+              <ImageBlock
                 key={`img-${block.id}`}
-                src={block.dataUrl}
-                alt={isBg ? "PDF background" : "PDF image"}
-                style={{
-                  position: "absolute",
-                  left: rect.left,
-                  top: rect.top,
-                  width: rect.width,
-                  height: rect.height,
-                  zIndex: isBg ? 0 : 1,
-                  objectFit: isBg ? "fill" : "contain",
-                  pointerEvents: isBg ? "none" : "auto",
-                  userSelect: "none",
-                }}
-                draggable={false}
+                block={block}
+                rect={rect}
+                objects={objects}
+                scale={scale}
+                forceLayout={bumpLayoutTick}
               />
             );
           }

@@ -260,32 +260,25 @@ export const usePDFStore = create((set) => ({
     const pageImages = page.images?.pageImages ?? [];
     const img = pageImages[imgIdx];
     if (!img) return {};
-
     const ap = img.appearances?.[0];
     if (!ap) return {};
-
+    // 1. Calculate how much the height is changing (deltaH)
     const deltaH = newRenderedHeight - ap.renderedHeight;
     const yThreshold = ap.y;
-
     const prePages = [...state.pages];
     const prePage = { ...prePages[pageIdx] };
     const prePageImages = [...(prePage.images?.pageImages ?? [])];
-
+    // 2. Set new PDF coordinates (preserving top-left anchor point)
     const newY = ap.y + ap.renderedHeight - newRenderedHeight;
     const newAp = { ...ap, y: newY, renderedWidth: newRenderedWidth, renderedHeight: newRenderedHeight };
     prePageImages[imgIdx] = { ...img, appearances: [newAp] };
     prePage.images = { ...prePage.images, pageImages: prePageImages };
     prePages[pageIdx] = prePage;
-
+    // Filter to avoid shifting the image itself during reflow
     const skipFilter = (item) => item.type === 'image' && item.originalPage === pageIdx && item.originalIdx === imgIdx;
-
+    // 3. Trigger smart global reflow to push/pull content below the image
     let finalPages = prePages;
-    if (deltaH > 0) {
-      finalPages = applyGlobalReflow(prePages, pageIdx, yThreshold, deltaH, skipFilter);
-    } else if (deltaH < 0) {
-      finalPages = applyGlobalReflow(prePages, pageIdx, yThreshold, deltaH, skipFilter); // amount is negative here! Wait, if amount is negative, it shifts UP!
-    }
-
+    finalPages = applyGlobalReflow(prePages, pageIdx, yThreshold, deltaH, skipFilter);
     return { pages: finalPages, activeImage: null };
   }),
 
