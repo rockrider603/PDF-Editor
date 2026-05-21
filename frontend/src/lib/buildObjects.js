@@ -78,8 +78,48 @@ export function buildObjects(pages = []) {
         _sortY: topYInPage,
       });
     });
+    // ── Shapes (lines, rectangles, paths) ─────────────────────────────────
+    (page?.shapes ?? []).forEach((shape, shapeIdx) => {
+      // Compute the top-y in page coordinates for document-order sorting.
+      // For lines we use the higher y (lower on page in PDF bottom-left coords).
+      // For rects/paths we use the bottom edge (lowest y in PDF space).
+      let sortY;
+      if (shape.type === 'line') {
+        const topPdfY = Math.max(shape.y1, shape.y2);
+        sortY = pageHeight - topPdfY;
+      } else if (shape.type === 'rect') {
+        sortY = pageHeight - (shape.y + shape.height);
+      } else {
+        const maxY = Math.max(...(shape.points ?? []).map(p => p.y));
+        sortY = pageHeight - maxY;
+      }
 
-    // ── Text: paragraphs (spacing-grouped) + headers ──────────────────
+      pageObjects.push({
+        id: `shape-${pageIdx}-${shapeIdx}`,
+        type: 'shape',
+        shapeKind: shape.type,          // 'line' | 'rect' | 'path'
+        pageIdx,
+        pageHeight,
+        // Raw PDF-space coordinates (bottom-left origin):
+        ...(shape.type === 'line' && {
+          x1: shape.x1, y1: shape.y1,
+          x2: shape.x2, y2: shape.y2,
+        }),
+        ...(shape.type === 'rect' && {
+          x: shape.x, y: shape.y,
+          width: shape.width, height: shape.height,
+        }),
+        ...(shape.type === 'path' && {
+          points: shape.points,
+        }),
+        strokeColor: shape.strokeColor ?? null,
+        fillColor:   shape.fillColor   ?? null,
+        lineWidth:   shape.lineWidth   ?? 1,
+        _sortY: sortY,
+      });
+    });
+
+
     //
     // We intentionally IGNORE the SDK's paragraph classification because
     // its short-line / indented-start / hanging-indent rules fire wildly

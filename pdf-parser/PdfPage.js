@@ -4,6 +4,7 @@ import { extractBackgroundImage } from './src/images/backgroundDetector.js';
 import { scanPageImages } from './src/images/imageScanner.js';
 import { buildXObjectNameMap } from './src/images/pageContentParser.js';
 import { getPageDimensions } from './src/images/backgroundDetector.js';
+import { extractShapes } from './src/shapes/pdfShapeExtractor.js';
 
 /**
  * Adapter for a single PDF page.
@@ -137,27 +138,54 @@ export class PdfPage {
         return { background: bg, pageImages: pageImgs };
     }
 
+    // ── Shape Extraction ───────────────────────────────────────────────────────
+
+    /**
+     * Extracts vector shapes (lines, rectangles, paths) from this page.
+     *
+     * Parses PDF graphics operators from the decompressed content stream and
+     * returns normalised shape descriptors in PDF user-space (bottom-left origin).
+     *
+     * Filters out near-full-page clip/crop rectangles that Word/LibreOffice
+     * inject as a page-boundary clipping path — these are not real shapes.
+     *
+     * @returns {Array<{type:'line'|'rect'|'path', [key:string]:any}>}
+     */
+    getShapes() {
+        const dims = this.dimensions;
+        const rawShapes = extractShapes(this.#contentStream);
+
+        // Reject rectangles that cover ≥ 95 % of the page (clipping masks).
+        return rawShapes.filter(s => {
+            if (s.type !== 'rect') return true;
+            const areaFraction = (s.width * s.height) / (dims.width * dims.height);
+            return areaFraction < 0.95;
+        });
+    }
+
     // ── Combined Extraction ────────────────────────────────────────────────────
 
     /**
      * Runs the full extraction pipeline in a single call.
      *
-     * Equivalent to calling `getText()`, `classifyText()`, and `getImages()` in
-     * sequence, but more convenient when all three results are needed at once.
+     * Equivalent to calling `getText()`, `classifyText()`, `getImages()`, and
+     * `getShapes()` in sequence, but more convenient when all are needed at once.
      *
      * @returns {Promise<{
      *   dimensions:     { width: number, height: number },
      *   textElements:   Array<{ text, x, y, width }>,
      *   classification: object,
-     *   images:         { background: object|null, pageImages: object[] }
+     *   images:         { background: object|null, pageImages: object[] },
+     *   shapes:         Array<{type:string, [key:string]:any}>
      * }>}
      */
     async extract() {
-        const dimensions    = this.dimensions;
-        const textElements  = await this.getText();
+        const dimensions     = this.dimensions;
+        const textElements   = await this.getText();
         const classification = this.classifyText(textElements);
-        const images        = await this.getImages();
+        const images         = await this.getImages();
+        const shapes         = this.getShapes();
 
-        return { dimensions, textElements, classification, images };
+        return { dimensions, textElements, classification, images, shapes };
     }
 }

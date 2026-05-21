@@ -44,8 +44,16 @@ export function processContentStream(decompressed, fonts) {
     const lines = decompressed.split('\n');
     let currentFont = null;
     let currentFontSize = null;
-    let currentY = null;
-    let currentX = null;
+
+    // Track absolute coordinate state
+    let lineX = 0;
+    let lineY = 0;
+    let currentX = 0;
+    let currentY = 0;
+    let scaleX = 1;
+    let scaleY = 1;
+    let leading = 0;
+
     const groupedLines = [];
 
     function appendTextChunk(text) {
@@ -69,31 +77,81 @@ export function processContentStream(decompressed, fonts) {
     }
 
     for (const line of lines) {
+        // Reset matrices at Begin Text (BT)
+        if (/\bBT\b/.test(line)) {
+            lineX = 0;
+            lineY = 0;
+            currentX = 0;
+            currentY = 0;
+            scaleX = 1;
+            scaleY = 1;
+        }
+
         const fontMatch = line.match(PDF_REGEX.text.fontTf);
         if (fontMatch) {
             currentFont = 'F' + fontMatch[1];
             currentFontSize = parseFloat(fontMatch[2]);
         }
 
-        const tmMatch = line.match(PDF_REGEX.text.tmPosition);
-        if (tmMatch) {
-            currentX = parseFloat(tmMatch[1]);
-            currentY = parseFloat(tmMatch[2]);
+        // TL - set leading
+        const tlMatch = line.match(/(-?[\d.]+)\s+TL/);
+        if (tlMatch) {
+            leading = parseFloat(tlMatch[1]);
         }
 
+        // T* - move to start of next line using leading
+        if (/\bT\*\b/.test(line)) {
+            lineY -= leading;
+            currentX = lineX;
+            currentY = lineY;
+        }
+
+        // Td - relative move
+        const tdMatch = line.match(/(-?[\d.]+)\s+(-?[\d.]+)\s+Td/);
+        if (tdMatch) {
+            const tx = parseFloat(tdMatch[1]);
+            const ty = parseFloat(tdMatch[2]);
+            lineX = tx * scaleX + lineX;
+            lineY = ty * scaleY + lineY;
+            currentX = lineX;
+            currentY = lineY;
+        }
+
+        // TD - relative move and set leading
+        const tdCapitalMatch = line.match(/(-?[\d.]+)\s+(-?[\d.]+)\s+TD/);
+        if (tdCapitalMatch) {
+            const tx = parseFloat(tdCapitalMatch[1]);
+            const ty = parseFloat(tdCapitalMatch[2]);
+            lineX = tx * scaleX + lineX;
+            lineY = ty * scaleY + lineY;
+            currentX = lineX;
+            currentY = lineY;
+            leading = -ty * scaleY;
+        }
+
+        // Tm - absolute matrix
+        const tmMatch = line.match(/(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+Tm/);
+        if (tmMatch) {
+            scaleX = parseFloat(tmMatch[1]);
+            scaleY = parseFloat(tmMatch[4]);
+            lineX = parseFloat(tmMatch[5]);
+            lineY = parseFloat(tmMatch[6]);
+            currentX = lineX;
+            currentY = lineY;
+        }
+
+        // TJ array
         const tjArrayMatch = line.match(PDF_REGEX.text.tjArray);
-        if (tjArrayMatch && currentFont && fonts[currentFont]) {
+        if (tjArrayMatch && currentFont) {
+            const cmapMap = fonts[currentFont]?.cmapMap || {};
             const parts = tjArrayMatch[1].match(PDF_REGEX.text.tjParts) || [];
             let combined = '';
             for (const part of parts) {
                 if (part.startsWith('<')) {
-                    combined += translateText(fonts[currentFont].cmapMap, part);
+                    combined += translateText(cmapMap, part);
                 } else if (part.startsWith('(')) {
                     combined += decodePdfLiteralString(part);
                 } else {
-                    // It's a kerning number.
-                    // Negative numbers shift text to the right (adding space).
-                    // A large negative value is commonly used to simulate a space character.
                     const kern = parseFloat(part);
                     if (kern < -150) {
                         combined += ' ';
@@ -104,9 +162,19 @@ export function processContentStream(decompressed, fonts) {
             continue;
         }
 
+        // Tj single hex
         const tjSingleMatch = line.match(PDF_REGEX.text.tjSingle);
-        if (tjSingleMatch && currentFont && fonts[currentFont]) {
-            appendTextChunk(translateText(fonts[currentFont].cmapMap, tjSingleMatch[1]));
+        if (tjSingleMatch && currentFont) {
+            const cmapMap = fonts[currentFont]?.cmapMap || {};
+            appendTextChunk(translateText(cmapMap, tjSingleMatch[1]));
+            continue;
+        }
+
+        // Tj single literal (e.g. (text) Tj)
+        const tjSingleLiteralMatch = line.match(/\(([^)]+)\)\s*Tj/);
+        if (tjSingleLiteralMatch) {
+            appendTextChunk(decodePdfLiteralString(tjSingleLiteralMatch[0]));
+            continue;
         }
     }
 

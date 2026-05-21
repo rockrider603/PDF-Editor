@@ -49,6 +49,29 @@ export function parseCMap(cmapText) {
                     startSrc++;
                     startUni++;
                 }
+            } else {
+                // Handle range mapped to array: <srcCode1> <srcCode2> [ <dstString1> <dstString2> ... ]
+                // e.g. <123E> <123F> [ <005B> <005D> ]
+                const arrayRangeMatch = trimmed.match(/<([0-9A-Fa-f]+)>\s+<([0-9A-Fa-f]+)>\s+\[\s*([^\]]+)\s*\]/);
+                if (arrayRangeMatch) {
+                    const srcWidth = arrayRangeMatch[1].length;
+                    const startSrc = parseInt(arrayRangeMatch[1], 16);
+                    const endSrc = parseInt(arrayRangeMatch[2], 16);
+                    
+                    const destHexes = [];
+                    const hexRegex = /<([0-9A-Fa-f]+)>/g;
+                    let match;
+                    while ((match = hexRegex.exec(arrayRangeMatch[3])) !== null) {
+                        destHexes.push(match[1]);
+                    }
+                    
+                    for (let i = 0; startSrc + i <= endSrc && i < destHexes.length; i++) {
+                        const curSrc = startSrc + i;
+                        const srcHex = curSrc.toString(16).toUpperCase().padStart(srcWidth, '0');
+                        const uniHex = destHexes[i].toUpperCase();
+                        map[srcHex] = uniHex;
+                    }
+                }
             }
         }
     }
@@ -116,6 +139,20 @@ export function getCMapCodeLengths(cmapMap) {
 export function translateText(cmapMap, hexString) {
     let result = '';
     const cleaned = hexString.replace(PDF_REGEX.text.cleanedHexBrackets, '').toUpperCase();
+    
+    // Fallback if no CMap is defined: decode hex pairs directly as ASCII/Latin-1
+    if (!cmapMap || Object.keys(cmapMap).length === 0) {
+        let idx = 0;
+        while (idx < cleaned.length) {
+            const code = cleaned.slice(idx, idx + 2);
+            if (code.length === 2) {
+                result += String.fromCharCode(parseInt(code, 16));
+            }
+            idx += 2;
+        }
+        return result;
+    }
+
     const codeLengths  = getCMapCodeLengths(cmapMap);
     const fallbackLength = codeLengths.length ? codeLengths[codeLengths.length - 1] : 2;
 

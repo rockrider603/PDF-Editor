@@ -41,23 +41,31 @@ export function findFontAndCMap(bytes, pdfString, pageObjStr) {
         const fontRef  = parts.slice(1).join(' ');
         const fontObj  = getObject(bytes, pdfString, fontRef);
 
-        let toUnicodeRef;
+        let toUnicodeRef = null;
         try {
             toUnicodeRef = extractValue(fontObj, '/ToUnicode');
         } catch {
-            continue; // font has no ToUnicode CMap — skip
+            // Font has no ToUnicode CMap
         }
 
-        const cmapObjBytes = getObject(bytes, pdfString, toUnicodeRef, true);
-        const cmapLen      = resolveLength(bytes, pdfString, cmapObjBytes);
-        const cmapText     = decompressStream(cmapObjBytes, cmapLen);
-        const parsedCMap   = parseCMap(cmapText);
+        if (toUnicodeRef) {
+            const cmapObjBytes = getObject(bytes, pdfString, toUnicodeRef, true);
+            const cmapLen      = resolveLength(bytes, pdfString, cmapObjBytes);
+            const cmapText     = decompressStream(cmapObjBytes, cmapLen);
+            const parsedCMap   = parseCMap(cmapText);
 
-        fonts[fontName] = {
-            ref:     fontRef,
-            cmapMap: parsedCMap,
-            charMap: buildCharMap(parsedCMap)
-        };
+            fonts[fontName] = {
+                ref:     fontRef,
+                cmapMap: parsedCMap,
+                charMap: buildCharMap(parsedCMap)
+            };
+        } else {
+            fonts[fontName] = {
+                ref:     fontRef,
+                cmapMap: {},
+                charMap: {}
+            };
+        }
     }
 
     return fonts;

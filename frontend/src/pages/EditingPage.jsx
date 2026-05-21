@@ -203,6 +203,50 @@ const EditingPage = () => {
             });
         }
 
+        // ── Shapes ─────────────────────────────────────────────────────────
+        const shapeObjects = editedObjects.filter(
+          (b) => b.type === "shape" && b.pageIdx === pageIdx
+        );
+
+        const getPdfLibColor = (c) => {
+          if (!c) return undefined;
+          return rgb(c.r ?? 0, c.g ?? 0, c.b ?? 0);
+        };
+
+        for (const shape of shapeObjects) {
+          const strokeColor = getPdfLibColor(shape.strokeColor);
+          const fillColor   = getPdfLibColor(shape.fillColor);
+          const lw          = shape.lineWidth ?? 1;
+
+          if (shape.shapeKind === 'line') {
+            pdfPage.drawLine({
+              start: { x: shape.x1, y: shape.y1 },
+              end: { x: shape.x2, y: shape.y2 },
+              thickness: lw,
+              color: strokeColor ?? rgb(0, 0, 0),
+            });
+          } else if (shape.shapeKind === 'rect') {
+            pdfPage.drawRectangle({
+              x: shape.x,
+              y: shape.y,
+              width: shape.width,
+              height: shape.height,
+              borderWidth: strokeColor ? lw : undefined,
+              borderColor: strokeColor,
+              color: fillColor,
+            });
+          } else if (shape.shapeKind === 'path' && shape.points?.length) {
+            for (let i = 1; i < shape.points.length; i++) {
+              pdfPage.drawLine({
+                start: { x: shape.points[i - 1].x, y: shape.points[i - 1].y },
+                end: { x: shape.points[i].x, y: shape.points[i].y },
+                thickness: lw,
+                color: strokeColor ?? rgb(0, 0, 0),
+              });
+            }
+          }
+        }
+
         // ── Text blocks ────────────────────────────────────────────────────
         // Use edited objects for this page, preserving document order.
         const textObjects = editedObjects.filter(

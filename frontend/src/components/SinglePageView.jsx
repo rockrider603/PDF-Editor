@@ -35,6 +35,17 @@ const DEFAULT_PAGE_WIDTH_PT = 612;
 const TYPING_DEBOUNCE_MS = 150;
 const TEXT_TYPES = new Set(["paragraph", "header", "line"]);
 const IMAGE_TYPES = new Set(["image"]);
+const SHAPE_TYPES = new Set(["shape"]);
+
+// ── CSS colour helper ─────────────────────────────────────────────────────────
+// Converts { r, g, b } (0-1 range) to a CSS `rgb(...)` string.
+const toCssColor = (c, fallback = 'transparent') => {
+  if (!c) return fallback;
+  const r = Math.round(c.r * 255);
+  const g = Math.round(c.g * 255);
+  const b = Math.round(c.b * 255);
+  return `rgb(${r},${g},${b})`;
+};
 
 const SinglePageView = ({
   pages = [],
@@ -144,6 +155,11 @@ const SinglePageView = ({
     [pages]
   );
 
+  const pageHeightsByIdx = useMemo(
+    () => pages.map((p) => p?.dimensions?.height ?? 792),
+    [pages]
+  );
+
   const scale = useMemo(() => {
     const maxW = pageWidthsByIdx.reduce(
       (m, w) => Math.max(m, w),
@@ -158,6 +174,7 @@ const SinglePageView = ({
         objects,
         scale,
         pageWidthsByIdx,
+        pageHeightsByIdx,
         measureCtx: measureCtxRef.current,
         measureCache: measureCacheRef.current,
         measuredHeights: measuredHeightsRef.current,
@@ -165,7 +182,7 @@ const SinglePageView = ({
     // heightTick is the dep that fires when ResizeObserver wrote to
     // measuredHeightsRef. We can't depend on the Map itself (identity is
     // stable) so the tick is the trigger.
-    [objects, scale, pageWidthsByIdx, heightTick, layoutTick]
+    [objects, scale, pageWidthsByIdx, pageHeightsByIdx, heightTick, layoutTick]
   );
 
   // ── Caret helpers ─────────────────────────────────────────────────────────
@@ -600,6 +617,112 @@ const SinglePageView = ({
       </div>
     );
   };
+  // ── Shape blocks ──────────────────────────────────────────────────────
+  const ShapeBlock = ({ block, rect, scale }) => {
+    const stroke = toCssColor(block.strokeColor, 'none');
+    const fill   = toCssColor(block.fillColor,   'none');
+    const lw     = Math.max(0.5, (block.lineWidth ?? 1) * scale);
+
+    if (block.shapeKind === 'line') {
+      // rect carries the bounding box; recompute SVG-space endpoints from
+      // the raw PDF coords stored in the layout entry.
+      const pH     = rect._pageHeight ?? (block.pageHeight ?? 792);
+      const ps     = rect._pageStart  ?? 0;
+      const sc     = rect._scale      ?? scale;
+      const svgX1  = (block.x1) * sc - rect.left;
+      const svgY1  = ps + (pH - block.y1) * sc - rect.top;
+      const svgX2  = (block.x2) * sc - rect.left;
+      const svgY2  = ps + (pH - block.y2) * sc - rect.top;
+      const w      = Math.max(rect.width  + lw * 2, 4);
+      const h      = Math.max(rect.height + lw * 2, 4);
+      const offX   = lw;
+      const offY   = lw;
+      return (
+        <svg
+          style={{
+            position: 'absolute',
+            top:    rect.top  - offY,
+            left:   rect.left - offX,
+            width:  w,
+            height: h,
+            overflow: 'visible',
+            pointerEvents: 'none',
+            zIndex: 3,
+          }}
+        >
+          <line
+            x1={svgX1 + offX}
+            y1={svgY1 + offY}
+            x2={svgX2 + offX}
+            y2={svgY2 + offY}
+            stroke={stroke}
+            strokeWidth={lw}
+            strokeLinecap="round"
+          />
+        </svg>
+      );
+    }
+
+    if (block.shapeKind === 'rect') {
+      return (
+        <svg
+          style={{
+            position: 'absolute',
+            top:    rect.top,
+            left:   rect.left,
+            width:  rect.width,
+            height: rect.height,
+            overflow: 'visible',
+            pointerEvents: 'none',
+            zIndex: 3,
+          }}
+        >
+          <rect
+            x={lw / 2}
+            y={lw / 2}
+            width={Math.max(0, rect.width  - lw)}
+            height={Math.max(0, rect.height - lw)}
+            stroke={stroke}
+            strokeWidth={lw}
+            fill={fill}
+          />
+        </svg>
+      );
+    }
+
+    if (block.shapeKind === 'path' && block.points?.length) {
+      const pH  = rect._pageHeight ?? (block.pageHeight ?? 792);
+      const ps  = rect._pageStart  ?? 0;
+      const sc  = rect._scale      ?? scale;
+      const mX  = rect._minX ?? 0;
+      const svgPts = block.points.map(p => [
+        (p.x - mX) * sc,
+        ps + (pH - p.y) * sc - rect.top,
+      ]);
+      const d = svgPts
+        .map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`)
+        .join(' ');
+      return (
+        <svg
+          style={{
+            position: 'absolute',
+            top:    rect.top,
+            left:   rect.left,
+            width:  rect.width  + lw * 2,
+            height: rect.height + lw * 2,
+            overflow: 'visible',
+            pointerEvents: 'none',
+            zIndex: 3,
+          }}
+        >
+          <path d={d} stroke={stroke} strokeWidth={lw} fill={fill} />
+        </svg>
+      );
+    }
+
+    return null;
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div
@@ -640,6 +763,17 @@ const SinglePageView = ({
                 objects={objects}
                 scale={scale}
                 forceLayout={bumpLayoutTick}
+              />
+            );
+          }
+
+          if (block.type === "shape") {
+            return (
+              <ShapeBlock
+                key={`shp-${block.id}`}
+                block={block}
+                rect={rect}
+                scale={scale}
               />
             );
           }

@@ -21,7 +21,7 @@ export function parsePaintOperations(contentStream) {
 
     let currentMatrix = [1, 0, 0, 1, 0, 0];
     let pendingMatrix = null;
-    const stateStack  = [];
+    const stateStack = [];
 
     for (const line of lines) {
         const trimmed = line.trim();
@@ -46,7 +46,7 @@ export function parsePaintOperations(contentStream) {
         const doMatch = trimmed.match(PDF_REGEX.images.doOperation);
         if (doMatch) {
             operations.push({
-                name:   doMatch[1],
+                name: doMatch[1],
                 matrix: pendingMatrix ? [...pendingMatrix] : [...currentMatrix]
             });
             pendingMatrix = null;
@@ -90,6 +90,5 @@ export function buildXObjectNameMap(bytes, pdfString, pageObjStr) {
             nameToObjNum.set(name, parseInt(objNum, 10));
         }
     }
-
     return nameToObjNum;
 }

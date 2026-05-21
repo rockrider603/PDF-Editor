@@ -20,7 +20,7 @@ export function getPageDimensions(pageObjStr) {
         return { width: 612, height: 792 };
     }
     return {
-        width:  parseFloat(match[3]) - parseFloat(match[1]),
+        width: parseFloat(match[3]) - parseFloat(match[1]),
         height: parseFloat(match[4]) - parseFloat(match[2])
     };
 }
@@ -58,16 +58,17 @@ function computePageCoverage(matrix, pageDims) {
  */
 function detectBackgroundObject(bytes, pdfString, pageObjStr, contentStream) {
     const pageDims = getPageDimensions(pageObjStr);
-    const nameMap  = buildXObjectNameMap(bytes, pdfString, pageObjStr);
+    const nameMap = buildXObjectNameMap(bytes, pdfString, pageObjStr);
+    console.log(`This function was called`);
     if (nameMap.size === 0) return null;
 
-    const paintOps   = parsePaintOperations(contentStream);
-    let bestObjNum   = null;
-    let bestMatrix   = null;
+    const paintOps = parsePaintOperations(contentStream);
+    let bestObjNum = null;
+    let bestMatrix = null;
     let bestCoverage = 0;
 
     for (const op of paintOps) {
-        const objNum   = nameMap.get(op.name);
+        const objNum = nameMap.get(op.name);
         if (objNum === undefined) continue;
 
         const coverage = computePageCoverage(op.matrix, pageDims);
@@ -75,8 +76,8 @@ function detectBackgroundObject(bytes, pdfString, pageObjStr, contentStream) {
 
         if (coverage > bestCoverage) {
             bestCoverage = coverage;
-            bestObjNum   = objNum;
-            bestMatrix   = op.matrix;
+            bestObjNum = objNum;
+            bestMatrix = op.matrix;
         }
     }
 
@@ -120,9 +121,9 @@ export async function extractBackgroundImage(bytes, pdfString, pageObjStr, conte
         objNum,
         role: 'background',
         appearances: [{
-            x:              matrix[4],
-            y:              pdfBottomY,
-            renderedWidth:  Math.abs(matrix[0]),
+            x: matrix[4],
+            y: pdfBottomY,
+            renderedWidth: Math.abs(matrix[0]),
             renderedHeight: Math.abs(d)
         }]
     };

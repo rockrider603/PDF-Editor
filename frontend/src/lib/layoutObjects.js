@@ -134,6 +134,7 @@ export function layoutObjects({
   objects,
   scale,
   pageWidthsByIdx,
+  pageHeightsByIdx = [],
   measureCtx,
   measureCache,
   measuredHeights,
@@ -161,6 +162,12 @@ export function layoutObjects({
     // Page transition → emit a soft separator marker, advance cursor past it.
     if (block.pageIdx !== lastPageIdx) {
       if (lastPageIdx !== null) {
+        // Enforce physical page height boundary
+        const prevPageHeight = (pageHeightsByIdx[lastPageIdx] ?? 792) * scale;
+        const prevPageStart  = pageStartCursorY.get(lastPageIdx) ?? TOP_MARGIN_PX;
+        const minNextPageStart = prevPageStart + prevPageHeight;
+        cursorY = Math.max(cursorY, minNextPageStart);
+
         separators.push({
           afterId: prevBlockId,
           top: cursorY,
@@ -209,6 +216,58 @@ export function layoutObjects({
       prevBlockId = block.id;
       continue;
     }
+
+    // ── Shape block — absolutely anchored, does NOT advance cursorY ────────
+    if (block.type === 'shape') {
+      const pageStart  = pageStartCursorY.get(block.pageIdx);
+      const pageHeight = block.pageHeight ?? 792;
+
+      // Each shape type needs slightly different bounding-box logic.
+      if (block.shapeKind === 'line') {
+        const minX   = Math.min(block.x1, block.x2);
+        const minY   = Math.min(block.y1, block.y2);
+        const maxX   = Math.max(block.x1, block.x2);
+        const maxY   = Math.max(block.y1, block.y2);
+        const topPx  = pageStart + (pageHeight - maxY) * scale;
+        layout.set(block.id, {
+          top:    topPx,
+          left:   minX * scale,
+          // Store raw PDF coords so the renderer can compute exact line endpoints.
+          width:  (maxX - minX) * scale,
+          height: Math.max(2, (maxY - minY) * scale),
+          // Carry the original PDF-space endpoints for SVG rendering.
+          _x1: block.x1, _y1: block.y1, _x2: block.x2, _y2: block.y2,
+          _pageStart: pageStart, _pageHeight: pageHeight, _scale: scale,
+        });
+      } else if (block.shapeKind === 'rect') {
+        const topPx = pageStart + (pageHeight - block.y - block.height) * scale;
+        layout.set(block.id, {
+          top:    topPx,
+          left:   block.x * scale,
+          width:  block.width  * scale,
+          height: block.height * scale,
+        });
+      } else if (block.shapeKind === 'path' && block.points?.length) {
+        const xs   = block.points.map(p => p.x);
+        const ys   = block.points.map(p => p.y);
+        const minX = Math.min(...xs), maxX = Math.max(...xs);
+        const minY = Math.min(...ys), maxY = Math.max(...ys);
+        const topPx = pageStart + (pageHeight - maxY) * scale;
+        layout.set(block.id, {
+          top:    topPx,
+          left:   minX * scale,
+          width:  (maxX - minX) * scale,
+          height: (maxY - minY) * scale,
+          _minX: minX, _minY: minY, _pageStart: pageStart,
+          _pageHeight: pageHeight, _scale: scale,
+        });
+      }
+
+      // Shapes are absolutely positioned overlays — they don't push text down.
+      prevBlockId = block.id;
+      continue;
+    }
+
     // Text block (paragraph / header / line).
     const fontPx = (block.fontSize ?? 12) * scale;
     const pageWidthPt =
@@ -245,10 +304,18 @@ export function layoutObjects({
     prevBlockId = block.id;
   }
 
+  // Enforce physical page height boundary for the last page
+  let finalCanvasHeight = cursorY;
+  if (lastPageIdx !== null) {
+    const lastPageHeight = (pageHeightsByIdx[lastPageIdx] ?? 792) * scale;
+    const lastPageStart  = pageStartCursorY.get(lastPageIdx) ?? TOP_MARGIN_PX;
+    finalCanvasHeight = Math.max(finalCanvasHeight, lastPageStart + lastPageHeight);
+  }
+
   return {
     layout,
     separators,
-    totalHeight: cursorY + TOP_MARGIN_PX,
+    totalHeight: finalCanvasHeight + TOP_MARGIN_PX,
   };
 }
 

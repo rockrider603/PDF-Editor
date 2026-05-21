@@ -62,6 +62,17 @@ console.log("Exists:", fs.existsSync(target));
             console.log(`  Reason: ${imgErr.message}`);
         }
 
+        console.log("\n--- Shape Extraction ---");
+        try {
+            const shapes = page.getShapes();
+            console.log(`Shapes extracted successfully: found ${shapes.length} shapes`);
+            shapes.forEach((s, idx) => {
+                console.log(`  Shape ${idx}:`, JSON.stringify(s));
+            });
+        } catch (shapeErr) {
+            console.log(`Shape extraction failed: ${shapeErr.message}`);
+        }
+
         console.log("\nSDK test complete.");
     } catch (err) {
         console.error("\nCritical Failure during SDK test:", err);
