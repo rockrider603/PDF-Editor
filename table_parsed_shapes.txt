@@ -1,0 +1,316 @@
+{
+  "dimensions": {
+    "width": 595.32,
+    "height": 841.92
+  },
+  "shapes": [
+    {
+      "type": "rect",
+      "x": 72.024,
+      "y": 769.44,
+      "width": 0.480000000000004,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 72.024,
+      "y": 769.44,
+      "width": 0.480000000000004,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 72.504,
+      "y": 769.44,
+      "width": 149.77999999999997,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 222.29,
+      "y": 769.44,
+      "width": 0.48000999999999294,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 222.77,
+      "y": 769.44,
+      "width": 149.78,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 372.55,
+      "y": 769.44,
+      "width": 0.48000999999999294,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 373.03,
+      "y": 769.44,
+      "width": 149.89999999999998,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 522.94,
+      "y": 769.44,
+      "width": 0.4800400000000309,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 522.94,
+      "y": 769.44,
+      "width": 0.4800400000000309,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 72.024,
+      "y": 754.78,
+      "width": 0.480000000000004,
+      "height": 14.663999999999987,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 72.024,
+      "y": 754.3,
+      "width": 0.480000000000004,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 72.024,
+      "y": 754.3,
+      "width": 0.480000000000004,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 72.504,
+      "y": 754.3,
+      "width": 149.77999999999997,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 222.29,
+      "y": 754.78,
+      "width": 0.48000999999999294,
+      "height": 14.663999999999987,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 222.29,
+      "y": 754.3,
+      "width": 0.48000999999999294,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 222.77,
+      "y": 754.3,
+      "width": 149.78,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 372.55,
+      "y": 754.78,
+      "width": 0.48000999999999294,
+      "height": 14.663999999999987,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 372.55,
+      "y": 754.3,
+      "width": 0.48000999999999294,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 373.03,
+      "y": 754.3,
+      "width": 149.89999999999998,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 522.94,
+      "y": 754.78,
+      "width": 0.4800400000000309,
+      "height": 14.663999999999987,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 522.94,
+      "y": 754.3,
+      "width": 0.4800400000000309,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    },
+    {
+      "type": "rect",
+      "x": 522.94,
+      "y": 754.3,
+      "width": 0.4800400000000309,
+      "height": 0.4800000000000182,
+      "strokeColor": null,
+      "fillColor": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "lineWidth": 1
+    }
+  ]
+}

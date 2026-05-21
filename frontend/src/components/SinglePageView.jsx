@@ -664,26 +664,29 @@ const SinglePageView = ({
     }
 
     if (block.shapeKind === 'rect') {
+      const hasStroke = block.strokeColor !== null;
+      const offset = hasStroke ? lw / 2 : 0;
+      
       return (
         <svg
           style={{
             position: 'absolute',
-            top:    rect.top,
-            left:   rect.left,
-            width:  rect.width,
-            height: rect.height,
+            top:    rect.top - offset,
+            left:   rect.left - offset,
+            width:  rect.width + (hasStroke ? lw : 0),
+            height: rect.height + (hasStroke ? lw : 0),
             overflow: 'visible',
             pointerEvents: 'none',
             zIndex: 3,
           }}
         >
           <rect
-            x={lw / 2}
-            y={lw / 2}
-            width={Math.max(0, rect.width  - lw)}
-            height={Math.max(0, rect.height - lw)}
+            x={offset}
+            y={offset}
+            width={Math.max(0, rect.width)}
+            height={Math.max(0, rect.height)}
             stroke={stroke}
-            strokeWidth={lw}
+            strokeWidth={hasStroke ? lw : 0}
             fill={fill}
           />
         </svg>
