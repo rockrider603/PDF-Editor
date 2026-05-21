@@ -5,6 +5,7 @@ import { scanPageImages } from './src/images/imageScanner.js';
 import { buildXObjectNameMap } from './src/images/pageContentParser.js';
 import { getPageDimensions } from './src/images/backgroundDetector.js';
 import { extractShapes } from './src/shapes/pdfShapeExtractor.js';
+import { detectTablesAndColorRed } from './src/shapes/pdfTableDetector.js';
 
 /**
  * Adapter for a single PDF page.
@@ -156,11 +157,16 @@ export class PdfPage {
         const rawShapes = extractShapes(this.#contentStream);
 
         // Reject rectangles that cover ≥ 95 % of the page (clipping masks).
-        return rawShapes.filter(s => {
+        const validShapes = rawShapes.filter(s => {
             if (s.type !== 'rect') return true;
             const areaFraction = (s.width * s.height) / (dims.width * dims.height);
             return areaFraction < 0.95;
         });
+
+        // Detect tables and color their borders red
+        detectTablesAndColorRed(validShapes);
+
+        return validShapes;
     }
 
     // ── Combined Extraction ────────────────────────────────────────────────────
