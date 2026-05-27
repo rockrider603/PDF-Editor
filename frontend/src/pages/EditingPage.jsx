@@ -258,7 +258,10 @@ const EditingPage = () => {
         for (const block of textObjects) {
           const fontSize = block.fontSize ?? 12;
           const x = block.x ?? MARGIN_PT;
-          const colWidth = Math.max(50, dimensions.width - x - MARGIN_PT);
+          let colWidth = Math.max(50, dimensions.width - x - MARGIN_PT);
+          if (block.inTable && block.tableBounds) {
+            colWidth = Math.max(50, block.tableBounds.x2 - x);
+          }
           const lineHeight = fontSize * 1.2;
 
           // Starting y: first line of original block (PDF bottom-left origin).
@@ -267,16 +270,24 @@ const EditingPage = () => {
           const startY = block.lines?.[0]?.y ?? block.y ?? dimensions.height - MARGIN_PT - fontSize;
           const wrappedLines = wrapText(block.text, fontSize, colWidth);
 
+          let textColor = rgb(0, 0, 0);
+          if (block.color === '#ff0000') {
+            textColor = rgb(1, 0, 0);
+          } else if (block.color && typeof block.color === 'object') {
+            textColor = rgb(block.color.r ?? 0, block.color.g ?? 0, block.color.b ?? 0);
+          }
+
           let pdfY = startY;
           for (const line of wrappedLines) {
             if (pdfY < MARGIN_PT) break; // clip at bottom margin
+            if (block.inTable && block.tableBounds && pdfY < block.tableBounds.y1) break; // clip at table cell boundary!
             try {
               pdfPage.drawText(line, {
                 x,
                 y: pdfY,
                 size: fontSize,
                 font: helveticaFont,
-                color: rgb(0, 0, 0),
+                color: textColor,
               });
             } catch (_) { /* skip problematic glyphs */ }
             pdfY -= lineHeight;

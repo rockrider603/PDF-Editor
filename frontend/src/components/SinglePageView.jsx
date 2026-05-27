@@ -156,7 +156,8 @@ const SinglePageView = ({
   );
 
   const pageHeightsByIdx = useMemo(
-    () => pages.map((p) => p?.dimensions?.height ?? 792),
+    // Force standard 11 inches (792pt) for every page height
+    () => pages.map(() => 792),
     [pages]
   );
 
@@ -321,6 +322,20 @@ const SinglePageView = ({
     const cur = objects[curIdx];
     const prev = objects[prevIdx];
 
+    // Prevent cross-cell merges: if either is in a table, they must share the exact same cell bounds
+    if (cur.inTable || prev.inTable) {
+      if (
+        !cur.inTable ||
+        !prev.inTable ||
+        cur.tableBounds?.x1 !== prev.tableBounds?.x1 ||
+        cur.tableBounds?.y1 !== prev.tableBounds?.y1 ||
+        cur.tableBounds?.x2 !== prev.tableBounds?.x2 ||
+        cur.tableBounds?.y2 !== prev.tableBounds?.y2
+      ) {
+        return; // Reject merging across different cells or table/non-table boundaries
+      }
+    }
+
     const curEl = blockRefs.current.get(cur.id);
     const prevEl = blockRefs.current.get(prev.id);
     const curText = curEl ? curEl.textContent : cur.text;
@@ -384,6 +399,8 @@ const SinglePageView = ({
         isBold: !!cur.isBold,
         isItalic: !!cur.isItalic,
         color: cur.color ?? null,
+        inTable: cur.inTable ?? false,
+        tableBounds: cur.tableBounds ?? null,
       });
       return next;
     });
@@ -750,9 +767,37 @@ const SinglePageView = ({
           borderRadius: 8,
         }}
       >
-
-
-
+        {separators.map((sep, i) => (
+          <div
+            key={`sep-${i}`}
+            style={{
+              position: "absolute",
+              top: sep.top - 10,
+              left: 0,
+              right: 0,
+              borderTop: "1px dashed #e5e7eb",
+              display: "flex",
+              justifyContent: "flex-end", // put it on the right side
+              pointerEvents: "none",
+              userSelect: "none",
+              zIndex: 0,
+            }}
+          >
+            <span style={{
+              background: "#ffffff",
+              padding: "2px 8px",
+              color: "#9ca3af",
+              fontSize: "10px",
+              transform: "translateY(-50%)",
+              marginRight: "24px",
+              borderRadius: "9999px",
+              border: "1px solid #e5e7eb",
+              fontWeight: "600",
+            }}>
+              Page {sep.toPage + 1}
+            </span>
+          </div>
+        ))}
         {objects.map((block) => {
           const rect = layout.get(block.id);
           if (!rect) return null;
@@ -891,6 +936,9 @@ const EditableBlock = ({
         left: rect.left,
         top: rect.top,
         width: rect.width,
+        maxHeight: block.inTable && block.tableBounds ? (block.tableBounds.y2 - block.tableBounds.y1) * scale : undefined,
+        overflow: block.inTable ? "hidden" : "visible",
+        boxSizing: "border-box",
         // No height/minHeight — let the browser size the box from its
         // wrapped content. ResizeObserver reports the result back into
         // measuredHeights, which the next layout pass consumes.

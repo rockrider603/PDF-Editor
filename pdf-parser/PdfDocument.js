@@ -1,4 +1,5 @@
 import { uint8ToBinaryString } from './src/utils/bytes.js';
+import { buildXrefMap } from './src/core/pdfXrefParser.js';
 import { findRootRef, extractFirstKid, extractKidN } from './src/core/pdfPageTreeResolver.js';
 import { getObject, extractValue, resolveLength, decompressStream } from './src/core/pdfObjectReader.js';
 import { PdfPage } from './PdfPage.js';
@@ -6,8 +7,9 @@ import { PdfPage } from './PdfPage.js';
 /**
  * Factory for loading and navigating a PDF document in the browser.
  *
- * Creates a `PdfDocument` instance from a File object (drag-and-drop upload),
- * then provides `getPage(n)` to obtain a `PdfPage` adapter for each page.
+ * On load, parses the PDF's Cross-Reference (XRef) table/stream.
+ * This handles out-of-order objects (via exact offsets) and decodes 
+ * compressed objects hidden inside Object Streams (Type 2).
  *
  * @example
  * const doc  = await PdfDocument.fromFile(file);
@@ -21,6 +23,12 @@ export class PdfDocument {
     #bytes;
     /** @type {string} Full PDF as a binary string (for regex operations) */
     #pdfString;
+    /**
+     * Cross-Reference Map: Map<objId (number) → { type, field2, field3 }>
+     * Built once in the constructor, used for all object lookups.
+     * @type {Map<number, object>}
+     */
+    #xrefMap;
 
     /**
      * @param {Uint8Array} bytes
@@ -28,17 +36,20 @@ export class PdfDocument {
     constructor(bytes) {
         this.#bytes     = bytes;
         this.#pdfString = uint8ToBinaryString(bytes);
+
+        // Parse the XRef table/streams
+        this.#xrefMap = buildXrefMap(bytes);
+
+        if (this.#xrefMap.size === 0) {
+            console.warn(
+                '[PdfDocument] XRef Map is empty — the file may not have a standard ' +
+                'startxref. Object lookups will fall back to regex scan.'
+            );
+        }
     }
 
     // ── Factory Methods ────────────────────────────────────────────────────────
 
-    /**
-     * Loads a PDF from a browser `File` object (e.g. from drag-and-drop or
-     * `<input type="file">`). Reads the file as an ArrayBuffer and wraps it.
-     *
-     * @param {File} file - The raw File object from the browser.
-     * @returns {Promise<PdfDocument>}
-     */
     static async fromFile(file) {
         const arrayBuffer = await file.arrayBuffer();
         return new PdfDocument(new Uint8Array(arrayBuffer));
@@ -46,65 +57,43 @@ export class PdfDocument {
 
     // ── Page Navigation ────────────────────────────────────────────────────────
 
-    /**
-     * Returns the total number of pages in the PDF.
-     * 
-     * @returns {number}
-     */
     get pageCount() {
-        const rootRef  = findRootRef(this.#pdfString);
-        const rootObj  = getObject(this.#bytes, this.#pdfString, rootRef);
+        const rootRef = findRootRef(this.#pdfString, this.#xrefMap, this.#bytes);
+        const rootObj = getObject(this.#bytes, this.#pdfString, rootRef, false, this.#xrefMap);
         const pagesRef = extractValue(rootObj, '/Pages');
-        const pagesObj = getObject(this.#bytes, this.#pdfString, pagesRef);
-        
-        // Use our new extractPageCount from pdfPageTreeResolver if imported, 
-        // or just implement inline:
+        const pagesObj = getObject(this.#bytes, this.#pdfString, pagesRef, false, this.#xrefMap);
+
         const match = pagesObj.match(/\/Count\s+(\d+)/);
         return match ? parseInt(match[1], 10) : 1;
     }
 
-    /**
-     * Returns a `PdfPage` adapter for the given 1-indexed page number.
-     *
-     * Resolves the PDF structure (trailer → root → pages → page node) and
-     * decompresses the page's content stream so the adapter is ready to use.
-     *
-     * @param {number} [n=1] - 1-indexed page number.
-     * @returns {Promise<PdfPage>}
-     * @throws {Error} If any step of the page tree walk fails.
-     */
     async getPage(n = 1) {
         const { pageObj, contentStream } = this.#resolvePageN(n);
-        return new PdfPage(this.#bytes, this.#pdfString, pageObj, contentStream);
+        return new PdfPage(this.#bytes, this.#pdfString, pageObj, contentStream, this.#xrefMap);
     }
 
     // ── Private Helpers ────────────────────────────────────────────────────────
 
-    /**
-     * Walks the PDF page tree from the trailer down to page `n` and
-     * decompresses the page's content stream.
-     *
-     * @param {number} n - 1-indexed page number.
-     * @returns {{ pageObj: string, contentStream: string }}
-     */
     #resolvePageN(n) {
-        // ── 1. Trailer → Root ───────────────────────────────────────────────
-        const rootRef = findRootRef(this.#pdfString);
-        const rootObj = getObject(this.#bytes, this.#pdfString, rootRef);
+        const idx = this.#xrefMap;
 
-        // ── 2. Root → Pages ─────────────────────────────────────────────────
+        // ── 1. Find Root (Catalog) ───────────────────────────────────────────
+        const rootRef = findRootRef(this.#pdfString, idx, this.#bytes);
+        const rootObj = getObject(this.#bytes, this.#pdfString, rootRef, false, idx);
+
+        // ── 2. Root → Pages ──────────────────────────────────────────────────
         const pagesRef = extractValue(rootObj, '/Pages');
-        const pagesObj = getObject(this.#bytes, this.#pdfString, pagesRef);
+        const pagesObj = getObject(this.#bytes, this.#pdfString, pagesRef, false, idx);
 
         // ── 3. Pages → Page node ─────────────────────────────────────────────
         const pageRef = extractKidN(pagesObj, pagesRef, n - 1);  // n is 1-indexed
-        const pageObj = getObject(this.#bytes, this.#pdfString, pageRef);
+        const pageObj = getObject(this.#bytes, this.#pdfString, pageRef, false, idx);
 
         // ── 4. Page → Content Stream ─────────────────────────────────────────
-        const contentsRef    = extractValue(pageObj, '/Contents');
-        const contentsBytes  = getObject(this.#bytes, this.#pdfString, contentsRef, true);
-        const streamLength   = resolveLength(this.#bytes, this.#pdfString, contentsBytes);
-        const contentStream  = decompressStream(contentsBytes, streamLength);
+        const contentsRef   = extractValue(pageObj, '/Contents');
+        const contentsBytes = getObject(this.#bytes, this.#pdfString, contentsRef, true, idx);
+        const streamLength  = resolveLength(this.#bytes, this.#pdfString, contentsBytes, idx);
+        const contentStream = decompressStream(contentsBytes, streamLength);
 
         return { pageObj, contentStream };
     }

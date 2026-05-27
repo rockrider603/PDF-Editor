@@ -1,35 +1,58 @@
 import { PDF_REGEX } from '../utils/pdfRegex.js';
 
 /**
- * Locates the `/Root` indirect reference from the PDF trailer section.
+ * Locates the `/Root` indirect reference from the PDF.
  *
- * Scans backwards from the end of the file to find the last `trailer`
- * keyword, then extracts the `/Root` entry from its dictionary.
+ * Uses the trailer dictionary parsed from the XRef table/stream.
  *
- * @param {string} pdfString - Full PDF file as a binary string.
+ * @param {string}              pdfString - Full PDF file as a binary string.
+ * @param {Map<number,object>}  xrefMap   - XRef Map from buildXrefMap().
+ * @param {Uint8Array}          bytes     - Full raw PDF bytes.
  * @returns {string} Indirect reference string, e.g. `"1 0 R"`.
- * @throws {Error} If the trailer or Root reference cannot be found.
+ * @throws {Error} If the Root reference cannot be found by any strategy.
  */
-export function findRootRef(pdfString) {
-    const trailerIdx = pdfString.lastIndexOf('trailer');
-    if (trailerIdx === -1) throw new Error('Trailer section not found');
+export function findRootRef(pdfString, xrefMap, bytes) {
+    // ── 1. startxref → XRef stream ──────────────────────────────────────────
+    const sxIdx = pdfString.lastIndexOf('startxref');
+    if (sxIdx !== -1) {
+        const afterSx = pdfString.substring(sxIdx + 9, sxIdx + 30).trim();
+        const offsetMatch = afterSx.match(/^(\d+)/);
+        if (offsetMatch) {
+            const xrefOffset = parseInt(offsetMatch[1], 10);
+            const headerChunk = pdfString.substring(xrefOffset, xrefOffset + 1024);
+            const rootM = headerChunk.match(/\/Root\s+(\d+\s+\d+\s+R)/);
+            if (rootM) return rootM[1];
+        }
+    }
 
-    const trailerChunk = pdfString.substring(
-        trailerIdx,
-        pdfString.indexOf('>>', trailerIdx) + 2
-    );
-    const match = trailerChunk.match(PDF_REGEX.core.rootRef);
-    if (!match) throw new Error('Root reference not found in trailer');
-    return match[1];
+    // ── 2. Traditional trailer ───────────────────────────────────────────────
+    const trailerIdx = pdfString.lastIndexOf('trailer');
+    if (trailerIdx !== -1) {
+        const chunk = pdfString.substring(trailerIdx, trailerIdx + 512);
+        const m = chunk.match(/\/Root\s+(\d+\s+\d+\s+R)/);
+        if (m) return m[1];
+    }
+
+    // ── 3. Fallback: Search for /Type /Catalog in the xrefMap ────────────────
+    if (xrefMap) {
+        // As requested: if there's no trailer, start checking objects (like 1 0 obj)
+        // for the Catalog.
+        for (const [objId, entry] of xrefMap.entries()) {
+            if (entry.type === 1) {
+                const startIdx = entry.field2;
+                const slice = pdfString.substring(startIdx, startIdx + 1024);
+                if (slice.includes('/Type') && slice.includes('/Catalog')) {
+                    return `${objId} 0 R`;
+                }
+            }
+        }
+    }
+
+    throw new Error('Could not locate PDF Root/Catalog.');
 }
 
 /**
  * Extracts the first child reference from a PDF Pages node's `/Kids` array.
- *
- * @param {string} pagesObjStr - String of the Pages object.
- * @param {string} refId       - Reference ID used in error messages.
- * @returns {string} Indirect reference string of the first kid, e.g. `"3 0 R"`.
- * @throws {Error} If the `/Kids` array cannot be found.
  */
 export function extractFirstKid(pagesObjStr, refId) {
     const kidsMatch = pagesObjStr.match(PDF_REGEX.core.kidsArray);

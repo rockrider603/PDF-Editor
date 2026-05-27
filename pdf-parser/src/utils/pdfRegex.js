@@ -22,9 +22,9 @@ export const PDF_REGEX = {
         indirectLengthObject: /obj\s*(\d+)\s*endobj/,
         directNumericLine:    /^\s*(\d+)\s*$/m,
 
-        /** Matches object headers like "1 0 obj" — uses lookbehind/ahead to avoid partial matches */
+        /** Matches object headers like "1 0 obj" — uses newline boundary to avoid partial matches inside streams */
         objectHeaderByIdGen: (id, gen) =>
-            new RegExp(`(?<!\\d)${id}(?!\\d)\\s+${gen}(?!\\d)\\s+obj`),
+            new RegExp(`(?:^|[\\r\\n])\\s*(?<!\\d)${id}(?!\\d)\\s+${gen}(?!\\d)\\s+obj`),
 
         /** Extracts values for keys like /Length or /Type */
         dictValueByKey: (key) => {
@@ -35,7 +35,7 @@ export const PDF_REGEX = {
 
     images: {
         // Page and Resource Blocks
-        pageObjectBlock:  /\d+\s+\d+\s+obj[\s\S]*?\/Type\s*\/Page[\s\S]*?endobj/g,
+        pageObjectBlock:  /\d+\s+\d+\s+obj(?:(?!\bendobj\b)[\s\S])*?\/Type\s*\/Page\b[\s\S]*?endobj/g,
         xObjectRefEntries: /\/([A-Za-z0-9]+)\s+(\d+)\s+\d+\s+R/g,
 
         // Metadata extraction

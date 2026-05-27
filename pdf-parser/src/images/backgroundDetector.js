@@ -59,7 +59,6 @@ function computePageCoverage(matrix, pageDims) {
 function detectBackgroundObject(bytes, pdfString, pageObjStr, contentStream) {
     const pageDims = getPageDimensions(pageObjStr);
     const nameMap = buildXObjectNameMap(bytes, pdfString, pageObjStr);
-    console.log(`This function was called`);
     if (nameMap.size === 0) return null;
 
     const paintOps = parsePaintOperations(contentStream);

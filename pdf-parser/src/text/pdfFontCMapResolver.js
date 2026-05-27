@@ -36,10 +36,10 @@ export function findFontAndCMap(bytes, pdfString, pageObjStr) {
     if (!fontNameMatches) return fonts;
 
     for (const fm of fontNameMatches) {
-        const parts    = fm.split(PDF_REGEX.common.whitespace);
+        const parts = fm.split(PDF_REGEX.common.whitespace);
         const fontName = parts[0].replace('/', '');
-        const fontRef  = parts.slice(1).join(' ');
-        const fontObj  = getObject(bytes, pdfString, fontRef);
+        const fontRef = parts.slice(1).join(' ');
+        const fontObj = getObject(bytes, pdfString, fontRef);
 
         let toUnicodeRef = null;
         try {
@@ -50,18 +50,18 @@ export function findFontAndCMap(bytes, pdfString, pageObjStr) {
 
         if (toUnicodeRef) {
             const cmapObjBytes = getObject(bytes, pdfString, toUnicodeRef, true);
-            const cmapLen      = resolveLength(bytes, pdfString, cmapObjBytes);
-            const cmapText     = decompressStream(cmapObjBytes, cmapLen);
-            const parsedCMap   = parseCMap(cmapText);
+            const cmapLen = resolveLength(bytes, pdfString, cmapObjBytes);
+            const cmapText = decompressStream(cmapObjBytes, cmapLen);
+            const parsedCMap = parseCMap(cmapText);
 
             fonts[fontName] = {
-                ref:     fontRef,
+                ref: fontRef,
                 cmapMap: parsedCMap,
                 charMap: buildCharMap(parsedCMap)
             };
         } else {
             fonts[fontName] = {
-                ref:     fontRef,
+                ref: fontRef,
                 cmapMap: {},
                 charMap: {}
             };

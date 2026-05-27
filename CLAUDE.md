@@ -18,7 +18,9 @@ A **fully browser-side PDF editor** — no server, no uploads, no backend. The u
 - **Three-layer editor architecture** — model (objects[]) → layout (layoutObjects pure fn) → render (absolute positioning from layout map)
 - Paragraph detection from raw `TextElement[]` using **spacing-only heuristics** (gap > 1.6 × fontSize = new paragraph) — no short-line / indent rules that fragment ragged-right body text
 - Header detection: SDK centre-tolerance check gated by ≤ 60 chars AND ≤ 8 words so long body lines are never misclassified as headings
-- Re-export the edited state to a downloadable PDF via `pdf-lib` (uses live edited objects, wraps text per-page)
+- **Automatic table detection & cell wrapping**: identifies table structures and colors borders red. Identifies any text situated within table cell bounds, colors it red, and restricts editing and rendering strictly within the cell boundaries.
+- **In-cell editing & layout constraints**: enforces cell-width constraints during layout and PDF export. Blocks Backspace and Enter events from merging or splitting across cell borders to preserve the table structure.
+- Re-export the edited state to a downloadable PDF via `pdf-lib` (uses live edited objects, wraps text per-page, colors in-table text red, and respects cell-bounds).
 
 ---
 

@@ -20,7 +20,7 @@
 // past it. The whole document is one continuous flow.
 
 const TOP_MARGIN_PX = 48;
-const BLOCK_GAP_PX = 8;
+const BLOCK_GAP_PX = 0;
 const SEPARATOR_HEIGHT_PX = 0;
 const LINE_HEIGHT_FACTOR = 1.2;
 const RIGHT_MARGIN_PDF_PT = 48;
@@ -153,34 +153,39 @@ export function layoutObjects({
   }
   if (!measureCache) measureCache = new Map();
 
-  let cursorY = TOP_MARGIN_PX;
+  // Pre-calculate physical page starts and separators for every page,
+  // including empty pages (like page 5). This ensures a "fixed distance"
+  // between page markers and shows the whole white page.
+  let precalcY = TOP_MARGIN_PX;
   const pageStartCursorY = new Map();
+  for (let i = 0; i < pageHeightsByIdx.length; i++) {
+    if (i > 0) {
+      separators.push({
+        afterId: null, // Pre-calculated, no specific block
+        top: precalcY,
+        fromPage: i - 1,
+        toPage: i,
+      });
+      precalcY += SEPARATOR_HEIGHT_PX;
+    }
+    pageStartCursorY.set(i, precalcY);
+    const h = (pageHeightsByIdx[i] ?? 792) * scale;
+    precalcY += h;
+  }
+  // Store the total physical canvas height
+  const physicalTotalHeight = precalcY;
+
+  let cursorY = TOP_MARGIN_PX;
   let lastPageIdx = null;
   let prevBlockId = null;
 
   for (const block of objects) {
-    // Page transition → emit a soft separator marker, advance cursor past it.
     if (block.pageIdx !== lastPageIdx) {
-      if (lastPageIdx !== null) {
-        // Enforce physical page height boundary
-        const prevPageHeight = (pageHeightsByIdx[lastPageIdx] ?? 792) * scale;
-        const prevPageStart  = pageStartCursorY.get(lastPageIdx) ?? TOP_MARGIN_PX;
-        const minNextPageStart = prevPageStart + prevPageHeight;
-        cursorY = Math.max(cursorY, minNextPageStart);
-
-        separators.push({
-          afterId: prevBlockId,
-          top: cursorY,
-          fromPage: lastPageIdx,
-          toPage: block.pageIdx,
-        });
-        cursorY += SEPARATOR_HEIGHT_PX;
-      }
-      pageStartCursorY.set(block.pageIdx, cursorY);
+      // Jump cursor to the actual start of this page, unless the previous page
+      // overflowed its physical bounds, in which case we keep going down.
+      const pageStart = pageStartCursorY.get(block.pageIdx) ?? TOP_MARGIN_PX;
+      cursorY = Math.max(cursorY, pageStart);
       lastPageIdx = block.pageIdx;
-    } else if (!pageStartCursorY.has(block.pageIdx)) {
-      // First block of the very first page.
-      pageStartCursorY.set(block.pageIdx, cursorY);
     }
 
     if (block.type === 'image') {
@@ -219,21 +224,21 @@ export function layoutObjects({
 
     // ── Shape block — absolutely anchored, does NOT advance cursorY ────────
     if (block.type === 'shape') {
-      const pageStart  = pageStartCursorY.get(block.pageIdx);
+      const pageStart = pageStartCursorY.get(block.pageIdx);
       const pageHeight = block.pageHeight ?? 792;
 
       // Each shape type needs slightly different bounding-box logic.
       if (block.shapeKind === 'line') {
-        const minX   = Math.min(block.x1, block.x2);
-        const minY   = Math.min(block.y1, block.y2);
-        const maxX   = Math.max(block.x1, block.x2);
-        const maxY   = Math.max(block.y1, block.y2);
-        const topPx  = pageStart + (pageHeight - maxY) * scale;
+        const minX = Math.min(block.x1, block.x2);
+        const minY = Math.min(block.y1, block.y2);
+        const maxX = Math.max(block.x1, block.x2);
+        const maxY = Math.max(block.y1, block.y2);
+        const topPx = pageStart + (pageHeight - maxY) * scale;
         layout.set(block.id, {
-          top:    topPx,
-          left:   minX * scale,
+          top: topPx,
+          left: minX * scale,
           // Store raw PDF coords so the renderer can compute exact line endpoints.
-          width:  (maxX - minX) * scale,
+          width: (maxX - minX) * scale,
           height: Math.max(2, (maxY - minY) * scale),
           // Carry the original PDF-space endpoints for SVG rendering.
           _x1: block.x1, _y1: block.y1, _x2: block.x2, _y2: block.y2,
@@ -242,21 +247,21 @@ export function layoutObjects({
       } else if (block.shapeKind === 'rect') {
         const topPx = pageStart + (pageHeight - block.y - block.height) * scale;
         layout.set(block.id, {
-          top:    topPx,
-          left:   block.x * scale,
-          width:  block.width  * scale,
+          top: topPx,
+          left: block.x * scale,
+          width: block.width * scale,
           height: block.height * scale,
         });
       } else if (block.shapeKind === 'path' && block.points?.length) {
-        const xs   = block.points.map(p => p.x);
-        const ys   = block.points.map(p => p.y);
+        const xs = block.points.map(p => p.x);
+        const ys = block.points.map(p => p.y);
         const minX = Math.min(...xs), maxX = Math.max(...xs);
         const minY = Math.min(...ys), maxY = Math.max(...ys);
         const topPx = pageStart + (pageHeight - maxY) * scale;
         layout.set(block.id, {
-          top:    topPx,
-          left:   minX * scale,
-          width:  (maxX - minX) * scale,
+          top: topPx,
+          left: minX * scale,
+          width: (maxX - minX) * scale,
           height: (maxY - minY) * scale,
           _minX: minX, _minY: minY, _pageStart: pageStart,
           _pageHeight: pageHeight, _scale: scale,
@@ -272,11 +277,28 @@ export function layoutObjects({
     const fontPx = (block.fontSize ?? 12) * scale;
     const pageWidthPt =
       pageWidthsByIdx[block.pageIdx] ?? DEFAULT_PAGE_WIDTH_PT;
-    const columnPdfPt = Math.max(
-      MIN_COLUMN_PDF_PT,
-      pageWidthPt - block.x - RIGHT_MARGIN_PDF_PT
-    );
+
+    let columnPdfPt;
+    if (block.inTable && block.tableBounds) {
+      columnPdfPt = Math.max(MIN_COLUMN_PDF_PT, block.tableBounds.x2 - block.x);
+    } else {
+      columnPdfPt = Math.max(
+        MIN_COLUMN_PDF_PT,
+        pageWidthPt - block.x - RIGHT_MARGIN_PDF_PT
+      );
+    }
     const columnPx = columnPdfPt * scale;
+    // Advance cursorY if the original PDF had a large gap here.
+    if (block.y !== undefined) {
+      const pageStart = pageStartCursorY.get(block.pageIdx) ?? TOP_MARGIN_PX;
+      const pageHeight = block.pageHeight ?? 792;
+      const originalTopPx = (pageHeight - block.y - (block.fontSize ?? 12) * 0.8) * scale;
+      const anchoredTop = pageStart + originalTopPx;
+      // Allow 5px slack to avoid separating blocks tightly packed.
+      if (anchoredTop > cursorY + 5) {
+        cursorY = anchoredTop;
+      }
+    }
 
     // Prefer the live DOM-reported height if ResizeObserver has measured
     // this block (the truth). Otherwise fall back to a canvas estimate so
@@ -304,13 +326,9 @@ export function layoutObjects({
     prevBlockId = block.id;
   }
 
-  // Enforce physical page height boundary for the last page
-  let finalCanvasHeight = cursorY;
-  if (lastPageIdx !== null) {
-    const lastPageHeight = (pageHeightsByIdx[lastPageIdx] ?? 792) * scale;
-    const lastPageStart  = pageStartCursorY.get(lastPageIdx) ?? TOP_MARGIN_PX;
-    finalCanvasHeight = Math.max(finalCanvasHeight, lastPageStart + lastPageHeight);
-  }
+  // Ensure the canvas is at least as tall as all physical pages combined,
+  // so empty pages at the end are still fully rendered.
+  let finalCanvasHeight = Math.max(cursorY, physicalTotalHeight);
 
   return {
     layout,

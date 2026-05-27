@@ -113,8 +113,8 @@ export function buildObjects(pages = []) {
           points: shape.points,
         }),
         strokeColor: shape.strokeColor ?? null,
-        fillColor:   shape.fillColor   ?? null,
-        lineWidth:   shape.lineWidth   ?? 1,
+        fillColor: shape.fillColor ?? null,
+        lineWidth: shape.lineWidth ?? 1,
         _sortY: sortY,
       });
     });
@@ -180,19 +180,22 @@ export function buildObjects(pages = []) {
         id: `t-${pageIdx}-${elIdx}`,
         type: 'header',
         pageIdx,
+        pageHeight,
         text: el.text,
         x: el.x,
+        y: el.y,
         fontSize: el.fontSize ?? 12,
         isBold: !!el.isBold,
         isItalic: !!el.isItalic,
         color: el.color ?? null,
+        inTable: el.inTable ?? false,
+        tableBounds: el.tableBounds ?? null,
         _sortY: topYInPage,
       });
     }
 
     // Group body lines into paragraphs using only vertical spacing.
     // Iteration order: top-to-bottom (PDF y descending).
-    const sortedBody = [...bodyLines].sort((a, b) => b.el.y - a.el.y);
     let currentGroup = [];
 
     const finalizeGroup = (group) => {
@@ -201,12 +204,17 @@ export function buildObjects(pages = []) {
       const text = group.map(({ el }) => el.text).join(' ');
       const ascent = (first.fontSize ?? 12) * 0.8;
       const topYInPage = pageHeight - first.y - ascent;
+      // A group is "in-table" if any of its lines were marked by the table detector.
+      const inTable = group.some(({ el }) => el.inTable);
+      const tableBounds = inTable ? (group.find(({ el }) => el.tableBounds)?.el.tableBounds ?? null) : null;
       pageObjects.push({
         id: `p${paragraphId++}`,
         type: 'paragraph',
         pageIdx,
+        pageHeight,
         text,
         x: Math.min(...group.map(({ el }) => el.x)),
+        y: first.y,
         fontSize: first.fontSize ?? 12,
         lines: group.map(({ el }) => ({
           text: el.text,
@@ -220,9 +228,43 @@ export function buildObjects(pages = []) {
         isBold: !!first.isBold,
         isItalic: !!first.isItalic,
         color: first.color ?? null,
+        inTable,
+        tableBounds,
         _sortY: topYInPage,
       });
     };
+
+    // Helper: returns a string key for a table cell boundary box, or null.
+    const cellKey = (el) => {
+      if (!el.inTable || !el.tableBounds) return null;
+      const { x1, y1, x2, y2 } = el.tableBounds;
+      return `${x1},${y1},${x2},${y2}`;
+    };
+
+    // Partition in-table lines by their exact cell, then finalise each cell group.
+    // This guarantees text from different cells is never merged into one block.
+    const tableLinesByCell = new Map(); // cellKey → [{el,elIdx}]
+    const normalBodyLines = [];
+
+    for (const item of bodyLines) {
+      const key = cellKey(item.el);
+      if (key !== null) {
+        if (!tableLinesByCell.has(key)) tableLinesByCell.set(key, []);
+        tableLinesByCell.get(key).push(item);
+      } else {
+        normalBodyLines.push(item);
+      }
+    }
+
+    // Emit each table-cell group as its own block.
+    for (const [, cellGroup] of tableLinesByCell) {
+      // Sort top-to-bottom within the cell.
+      cellGroup.sort((a, b) => b.el.y - a.el.y);
+      finalizeGroup(cellGroup);
+    }
+
+    // Group normal (non-table) body lines into paragraphs using vertical spacing.
+    const sortedBody = [...normalBodyLines].sort((a, b) => b.el.y - a.el.y);
 
     for (const cur of sortedBody) {
       if (currentGroup.length === 0) {

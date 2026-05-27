@@ -5,7 +5,7 @@ import { scanPageImages } from './src/images/imageScanner.js';
 import { buildXObjectNameMap } from './src/images/pageContentParser.js';
 import { getPageDimensions } from './src/images/backgroundDetector.js';
 import { extractShapes } from './src/shapes/pdfShapeExtractor.js';
-import { detectTablesAndColorRed } from './src/shapes/pdfTableDetector.js';
+import { detectTablesAndColorRed, getCellBounds } from './src/shapes/pdfTableDetector.js';
 
 /**
  * Adapter for a single PDF page.
@@ -36,18 +36,25 @@ export class PdfPage {
     #pageObj;
     /** @type {string} */
     #contentStream;
+    /**
+     * Byte-offset index passed from PdfDocument for order-independent object lookup.
+     * @type {Map<string,number>}
+     */
+    #index;
 
     /**
-     * @param {Uint8Array} bytes
-     * @param {string}     pdfString
-     * @param {string}     pageObj        - String of the Page object dictionary.
-     * @param {string}     contentStream  - Decompressed content stream text.
+     * @param {Uint8Array}         bytes
+     * @param {string}             pdfString
+     * @param {string}             pageObj        - String of the Page object dictionary.
+     * @param {string}             contentStream  - Decompressed content stream text.
+     * @param {Map<string,number>} [index=null]   - Offset index from buildOffsetIndex().
      */
-    constructor(bytes, pdfString, pageObj, contentStream) {
+    constructor(bytes, pdfString, pageObj, contentStream, index = null) {
         this.#bytes         = bytes;
         this.#pdfString     = pdfString;
         this.#pageObj       = pageObj;
         this.#contentStream = contentStream;
+        this.#index         = index ?? new Map();
     }
 
     // ── Page Info ──────────────────────────────────────────────────────────────
@@ -74,7 +81,7 @@ export class PdfPage {
      * @returns {Promise<Array<{ text: string, x: number, y: number, width: number }>>}
      */
     async getText() {
-        const fonts = findFontAndCMap(this.#bytes, this.#pdfString, this.#pageObj);
+        const fonts = findFontAndCMap(this.#bytes, this.#pdfString, this.#pageObj, this.#index);
         return processContentStream(this.#contentStream, fonts);
     }
 
@@ -119,17 +126,17 @@ export class PdfPage {
      */
     async getImages() {
         const bg = await extractBackgroundImage(
-            this.#bytes, this.#pdfString, this.#pageObj, this.#contentStream
+            this.#bytes, this.#pdfString, this.#pageObj, this.#contentStream, this.#index
         );
 
         // Build XObject name map for this specific page to determine which
         // image objects belong to it — avoids cross-page contamination
         // without relying on fragile string comparisons.
-        const nameMap     = buildXObjectNameMap(this.#bytes, this.#pdfString, this.#pageObj);
+        const nameMap     = buildXObjectNameMap(this.#bytes, this.#pdfString, this.#pageObj, this.#index);
         const pageObjNums = new Set(nameMap.values());
 
         // Scan all images in the PDF but keep only those on this page
-        let pageImgs = await scanPageImages(this.#bytes, this.#pdfString);
+        let pageImgs = await scanPageImages(this.#bytes, this.#pdfString, this.#index);
         pageImgs = pageImgs.filter(img => pageObjNums.has(img.objNum));
 
         if (bg) {
@@ -163,10 +170,10 @@ export class PdfPage {
             return areaFraction < 0.95;
         });
 
-        // Detect tables and color their borders red
-        detectTablesAndColorRed(validShapes);
+        // Detect tables, color their border shapes red, and get cell-grid descriptors.
+        const tableRegions = detectTablesAndColorRed(validShapes);
 
-        return validShapes;
+        return { shapes: validShapes, tableRegions };
     }
 
     // ── Combined Extraction ────────────────────────────────────────────────────
@@ -190,7 +197,23 @@ export class PdfPage {
         const textElements   = await this.getText();
         const classification = this.classifyText(textElements);
         const images         = await this.getImages();
-        const shapes         = this.getShapes();
+        const { shapes, tableRegions } = this.getShapes();
+
+        // Mark any text element that falls inside a detected table cell.
+        // Sets el.color = '#ff0000', el.inTable = true, el.tableBounds = { x1, y1, x2, y2 }.
+        if (tableRegions.length > 0) {
+            for (const el of textElements) {
+                for (const region of tableRegions) {
+                    const cell = getCellBounds(el, region);
+                    if (cell) {
+                        el.color      = '#ff0000';
+                        el.inTable    = true;
+                        el.tableBounds = cell;
+                        break;
+                    }
+                }
+            }
+        }
 
         return { dimensions, textElements, classification, images, shapes };
     }
