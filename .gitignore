@@ -9,3 +9,4 @@ uploads/
 *.~lock.*
 package-lock.json
 debug/
+.txt

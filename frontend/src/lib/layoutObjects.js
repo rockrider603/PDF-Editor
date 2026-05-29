@@ -103,8 +103,9 @@ export function measureWrappedHeight(text, fontPx, columnPx, ctx, cache) {
  * @param {Map<string|number, number>} [params.measuredHeights] — DOM-reported
  *   heights from ResizeObserver. Optional; if missing, canvas estimate used.
  * @returns {{
- *   layout: Map<string|number, {top:number, left:number, width:number, height:number}>,
+ *   layout: Map<string|number, {top:number, left:number, width:number, height:number; gapLines?: number; gapPx?: number}>,
  *   separators: Array<{ afterId: string|number|null, top: number, fromPage: number, toPage: number }>,
+ *   gapMarkers: Array<{ top:number, width:number, lines:number, px:number, prevId:string|number, nextId:string|number|null }>,
  *   totalHeight: number,
  * }}
  */
@@ -177,7 +178,34 @@ export function layoutObjects({
 
   let cursorY = TOP_MARGIN_PX;
   let lastPageIdx = null;
-  let prevBlockId = null;
+  let prevBlock = null;
+  const gapMarkers = [];
+
+  const estimateLineHeightPx = (block) => {
+    const fontSize = block && typeof block.fontSize === 'number' ? block.fontSize : 12;
+    return fontSize * LINE_HEIGHT_FACTOR * scale;
+  };
+
+  const recordGap = (prev, current, prevBottom, currentTop) => {
+    const gapPx = currentTop - prevBottom;
+    if (gapPx <= 0) return;
+
+    const currentLineHeight = estimateLineHeightPx(current);
+    const prevLineHeight = estimateLineHeightPx(prev);
+    const lineHeight = Math.max(currentLineHeight, prevLineHeight, 12 * LINE_HEIGHT_FACTOR * scale);
+    const lines = Math.max(1, Math.round(gapPx / lineHeight));
+
+    gapMarkers.push({
+      top: prevBottom + gapPx / 2,
+      width: Math.max(120, (pageWidthsByIdx[current.pageIdx] ?? DEFAULT_PAGE_WIDTH_PT) * scale * 0.25),
+      lines,
+      px: gapPx,
+      prevId: prev.id,
+      nextId: current.id,
+    });
+
+    return { gapLines: lines, gapPx };
+  };
 
   for (const block of objects) {
     if (block.pageIdx !== lastPageIdx) {
@@ -217,8 +245,21 @@ export function layoutObjects({
         height: h,
       });
 
+      if (prevBlock && prevBlock.pageIdx === block.pageIdx) {
+        const prevRect = layout.get(prevBlock.id);
+        if (prevRect) {
+          const gap = recordGap(prevBlock, block, prevRect.top + prevRect.height, effectiveTop);
+          if (gap) {
+            layout.set(block.id, {
+              ...layout.get(block.id),
+              ...gap,
+            });
+          }
+        }
+      }
+
       cursorY = effectiveTop + h + BLOCK_GAP_PX;
-      prevBlockId = block.id;
+      prevBlock = block;
       continue;
     }
 
@@ -269,7 +310,7 @@ export function layoutObjects({
       }
 
       // Shapes are absolutely positioned overlays — they don't push text down.
-      prevBlockId = block.id;
+      prevBlock = block;
       continue;
     }
 
@@ -288,16 +329,16 @@ export function layoutObjects({
       );
     }
     const columnPx = columnPdfPt * scale;
-    // Advance cursorY if the original PDF had a large gap here.
+    
+    // Calculate layout top position
+    let layoutTop = cursorY;
     if (block.y !== undefined) {
       const pageStart = pageStartCursorY.get(block.pageIdx) ?? TOP_MARGIN_PX;
       const pageHeight = block.pageHeight ?? 792;
       const originalTopPx = (pageHeight - block.y - (block.fontSize ?? 12) * 0.8) * scale;
       const anchoredTop = pageStart + originalTopPx;
-      // Allow 5px slack to avoid separating blocks tightly packed.
-      if (anchoredTop > cursorY + 5) {
-        cursorY = anchoredTop;
-      }
+      
+      layoutTop = Math.max(anchoredTop, cursorY);
     }
 
     // Prefer the live DOM-reported height if ResizeObserver has measured
@@ -316,23 +357,48 @@ export function layoutObjects({
       );
     }
 
+    // Calculate original height in pixels based on original lines' Y span
+    let originalHeightPt = 0;
+    if (block.lines && block.lines.length > 0) {
+      const topLineY = block.lines[0].y;
+      const bottomLineY = block.lines[block.lines.length - 1].y;
+      originalHeightPt = (topLineY - bottomLineY) + (block.fontSize ?? 12) * 1.2;
+    } else {
+      originalHeightPt = (block.fontSize ?? 12) * 1.2;
+    }
+    const originalHeightPx = originalHeightPt * scale;
+
     layout.set(block.id, {
-      top: cursorY,
+      top: layoutTop,
       left: block.x * scale,
       width: columnPx,
       height: h,
     });
-    cursorY += h + BLOCK_GAP_PX;
-    prevBlockId = block.id;
+
+    if (prevBlock && prevBlock.pageIdx === block.pageIdx) {
+      const prevRect = layout.get(prevBlock.id);
+      if (prevRect) {
+        const gap = recordGap(prevBlock, block, prevRect.top + prevRect.height, layoutTop);
+        if (gap) {
+          layout.set(block.id, {
+            ...layout.get(block.id),
+            ...gap,
+          });
+        }
+      }
+    }
+
+    cursorY = layoutTop + h + BLOCK_GAP_PX;
+    prevBlock = block;
   }
 
-  // Ensure the canvas is at least as tall as all physical pages combined,
-  // so empty pages at the end are still fully rendered.
-  let finalCanvasHeight = Math.max(cursorY, physicalTotalHeight);
+  // Set the height of the canvas to match where the last element layout ends, plus bottom margin
+  let finalCanvasHeight = cursorY;
 
   return {
     layout,
     separators,
+    gapMarkers,
     totalHeight: finalCanvasHeight + TOP_MARGIN_PX,
   };
 }

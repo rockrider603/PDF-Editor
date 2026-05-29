@@ -22,7 +22,7 @@ function getSegments(shapes) {
     for (const shape of shapes) {
         if (shape.type === 'line') {
             const isHoriz = Math.abs(shape.y1 - shape.y2) <= TOLERANCE;
-            const isVert  = Math.abs(shape.x1 - shape.x2) <= TOLERANCE;
+            const isVert = Math.abs(shape.x1 - shape.x2) <= TOLERANCE;
             if (isHoriz || isVert) {
                 segments.push({
                     shape,
@@ -37,7 +37,7 @@ function getSegments(shapes) {
         } else if (shape.type === 'rect') {
             // A thin rectangle that acts as a rule line.
             const isHoriz = shape.height <= 5 && shape.width > 10;
-            const isVert  = shape.width  <= 5 && shape.height > 10;
+            const isVert = shape.width <= 5 && shape.height > 10;
             if (isHoriz || isVert) {
                 segments.push({
                     shape,
@@ -52,13 +52,13 @@ function getSegments(shapes) {
             // A normal (non-thin) rectangle contributes all four edges.
             if (!isHoriz && !isVert && shape.width > 10 && shape.height > 10) {
                 // Bottom edge (horiz)
-                segments.push({ shape, x1: shape.x, x2: shape.x + shape.width, y1: shape.y,               y2: shape.y,               isHoriz: true,  isVert: false });
+                segments.push({ shape, x1: shape.x, x2: shape.x + shape.width, y1: shape.y, y2: shape.y, isHoriz: true, isVert: false });
                 // Top edge (horiz)
-                segments.push({ shape, x1: shape.x, x2: shape.x + shape.width, y1: shape.y + shape.height, y2: shape.y + shape.height, isHoriz: true,  isVert: false });
+                segments.push({ shape, x1: shape.x, x2: shape.x + shape.width, y1: shape.y + shape.height, y2: shape.y + shape.height, isHoriz: true, isVert: false });
                 // Left edge (vert)
-                segments.push({ shape, x1: shape.x,               x2: shape.x,               y1: shape.y, y2: shape.y + shape.height, isHoriz: false, isVert: true  });
+                segments.push({ shape, x1: shape.x, x2: shape.x, y1: shape.y, y2: shape.y + shape.height, isHoriz: false, isVert: true });
                 // Right edge (vert)
-                segments.push({ shape, x1: shape.x + shape.width,  x2: shape.x + shape.width,  y1: shape.y, y2: shape.y + shape.height, isHoriz: false, isVert: true  });
+                segments.push({ shape, x1: shape.x + shape.width, x2: shape.x + shape.width, y1: shape.y, y2: shape.y + shape.height, isHoriz: false, isVert: true });
             }
         }
     }
@@ -69,11 +69,11 @@ function intersectOrTouch(a, b) {
     // Orthogonal intersection
     if (a.isHoriz && b.isVert) {
         return a.x1 <= b.x1 + TOLERANCE && a.x2 >= b.x1 - TOLERANCE &&
-               b.y1 <= a.y1 + TOLERANCE && b.y2 >= a.y1 - TOLERANCE;
+            b.y1 <= a.y1 + TOLERANCE && b.y2 >= a.y1 - TOLERANCE;
     }
     if (a.isVert && b.isHoriz) {
         return b.x1 <= a.x1 + TOLERANCE && b.x2 >= a.x1 - TOLERANCE &&
-               a.y1 <= b.y1 + TOLERANCE && a.y2 >= b.y1 - TOLERANCE;
+            a.y1 <= b.y1 + TOLERANCE && a.y2 >= b.y1 - TOLERANCE;
     }
 
     // Parallel proximity / overlap
@@ -141,10 +141,10 @@ export function detectTablesAndColorRed(shapes) {
 
     for (const compIndices of components) {
         let horizCount = 0;
-        let vertCount  = 0;
+        let vertCount = 0;
         for (const idx of compIndices) {
             if (segments[idx].isHoriz) horizCount++;
-            if (segments[idx].isVert)  vertCount++;
+            if (segments[idx].isVert) vertCount++;
         }
 
         if (horizCount >= 2 && vertCount >= 2) {
@@ -162,8 +162,8 @@ export function detectTablesAndColorRed(shapes) {
             // Collect bounding box and the sorted positions of each grid line
             // so the caller can do fast cell-level lookups.
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-            const vertXSet   = new Set();
-            const horizYSet  = new Set();
+            const vertXSet = new Set();
+            const horizYSet = new Set();
 
             for (const idx of compIndices) {
                 const s = segments[idx];
@@ -173,7 +173,7 @@ export function detectTablesAndColorRed(shapes) {
                 maxY = Math.max(maxY, s.y2);
 
                 // Round to nearest integer to merge near-duplicate lines.
-                if (s.isVert)  vertXSet.add(Math.round((s.x1 + s.x2) / 2));
+                if (s.isVert) vertXSet.add(Math.round((s.x1 + s.x2) / 2));
                 if (s.isHoriz) horizYSet.add(Math.round((s.y1 + s.y2) / 2));
             }
 
@@ -182,7 +182,7 @@ export function detectTablesAndColorRed(shapes) {
                 y1: minY,
                 x2: maxX,
                 y2: maxY,
-                vertXPositions:  [...vertXSet].sort((a, b) => a - b),
+                vertXPositions: [...vertXSet].sort((a, b) => a - b),
                 horizYPositions: [...horizYSet].sort((a, b) => a - b),
             });
         }
@@ -211,7 +211,7 @@ export function getCellBounds(el, region) {
     if (el.x < region.x1 - CELL_PAD || el.x > region.x2 + CELL_PAD) return null;
     if (el.y < region.y1 - CELL_PAD || el.y > region.y2 + CELL_PAD) return null;
 
-    const verts  = region.vertXPositions;
+    const verts = region.vertXPositions;
     const horizs = region.horizYPositions;
 
     // Find the largest vertical x ≤ el.x  (left cell wall)

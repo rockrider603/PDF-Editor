@@ -47,6 +47,202 @@ const toCssColor = (c, fallback = 'transparent') => {
   return `rgb(${r},${g},${b})`;
 };
 
+const convertToSinglePage = (objs, pages) => {
+  if (!pages || pages.length === 0) return objs;
+  const pageHeights = pages.map(p => p?.dimensions?.height ?? 792);
+  const numPages = pages.length;
+
+  // 1. Calculate minTopDown and maxTopDown for each page based on content boundary
+  const minTopDown = [];
+  const maxTopDown = [];
+  for (let p = 0; p < numPages; p++) {
+    const pHeight = pageHeights[p];
+    const objsOnPage = objs.filter(o => o.pageIdx === p && (o.type === 'paragraph' || o.type === 'header' || o.type === 'line' || (o.type === 'image' && o.role !== 'background')));
+    if (objsOnPage.length === 0) {
+      minTopDown.push(0);
+      maxTopDown.push(pHeight);
+    } else {
+      let maxY = -Infinity; // highest point (largest Y)
+      let minY = Infinity;  // lowest point (smallest Y)
+      for (const o of objsOnPage) {
+        if (o.y !== undefined) {
+          const h = (o.type === 'image') ? (o.renderedHeight ?? 0) : 0;
+          if (o.y + h > maxY) maxY = o.y + h;
+          if (o.y < minY) minY = o.y;
+        }
+      }
+      if (maxY === -Infinity) maxY = pHeight;
+      if (minY === Infinity) minY = 0;
+
+      minTopDown.push(Math.max(0, pHeight - maxY));
+      maxTopDown.push(Math.min(pHeight, pHeight - minY));
+    }
+  }
+
+  // 2. Calculate cumulativeShift to collapse margin gaps down to standardGap (20pt)
+  const standardGap = 20;
+  const cumulativeShift = [0];
+  let currentShift = 0;
+  for (let p = 1; p < numPages; p++) {
+    const gap = (pageHeights[p - 1] - maxTopDown[p - 1]) + minTopDown[p];
+    const shift = Math.max(0, gap - standardGap);
+    currentShift += shift;
+    cumulativeShift.push(currentShift);
+  }
+
+  // 3. Calculate pageOffsets and total collapsed height
+  const pageOffsets = [];
+  let currentOffset = 0;
+  for (const h of pageHeights) {
+    pageOffsets.push(currentOffset);
+    currentOffset += h;
+  }
+  const totalH = currentOffset;
+  const totalH_collapsed = totalH - cumulativeShift[numPages - 1];
+
+  // 4. Map objects to global coordinates using cumulative shifts
+  return objs.map(obj => {
+    if (obj.pageIdx === undefined) return obj;
+    const pIdx = obj.pageIdx;
+    const pHeight = pageHeights[pIdx] ?? 792;
+    const offset = pageOffsets[pIdx] ?? 0;
+    const shift = cumulativeShift[pIdx] ?? 0;
+
+    const toGlobalY = (localY) => {
+      const topDown = offset - shift + (pHeight - localY);
+      return totalH_collapsed - topDown;
+    };
+
+    const updated = {
+      ...obj,
+      pageIdx: 0,
+      originalPageIdx: pIdx,
+      pageHeight: totalH_collapsed,
+      _cumulativeShift: cumulativeShift,
+      _pageOffsets: pageOffsets,
+      _pageHeights: pageHeights,
+      _totalH_collapsed: totalH_collapsed,
+    };
+
+    if (obj.y !== undefined) updated.y = toGlobalY(obj.y);
+    if (obj.y1 !== undefined) updated.y1 = toGlobalY(obj.y1);
+    if (obj.y2 !== undefined) updated.y2 = toGlobalY(obj.y2);
+    if (obj.tableBounds) {
+      updated.tableBounds = {
+        ...obj.tableBounds,
+        y1: toGlobalY(obj.tableBounds.y1),
+        y2: toGlobalY(obj.tableBounds.y2),
+      };
+    }
+    if (obj.points) {
+      updated.points = obj.points.map(p => ({ ...p, y: toGlobalY(p.y) }));
+    }
+    if (obj.lines) {
+      updated.lines = obj.lines.map(l => ({ ...l, y: toGlobalY(l.y) }));
+    }
+
+    return updated;
+  });
+};
+
+const convertToMultiPage = (objs, pages) => {
+  if (!pages || pages.length === 0) return objs;
+
+  const sample = objs.find(o => o._cumulativeShift !== undefined);
+  let cumulativeShift, pageOffsets, pageHeights, totalH_collapsed;
+
+  if (sample) {
+    cumulativeShift = sample._cumulativeShift;
+    pageOffsets = sample._pageOffsets;
+    pageHeights = sample._pageHeights;
+    totalH_collapsed = sample._totalH_collapsed;
+  } else {
+    pageHeights = pages.map(p => p?.dimensions?.height ?? 792);
+    pageOffsets = [];
+    let currentOffset = 0;
+    for (const h of pageHeights) {
+      pageOffsets.push(currentOffset);
+      currentOffset += h;
+    }
+    const totalH = currentOffset;
+    cumulativeShift = pages.map(() => 0);
+    totalH_collapsed = totalH;
+  }
+
+  return objs.map(obj => {
+    const pIdx = obj.originalPageIdx !== undefined ? obj.originalPageIdx : 0;
+    const pHeight = pageHeights[pIdx] ?? 792;
+    const offset = pageOffsets[pIdx] ?? 0;
+    const shift = cumulativeShift[pIdx] ?? 0;
+
+    const toLocalY = (globalY) => {
+      const topDown = totalH_collapsed - globalY;
+      const localTopDown = topDown - offset + shift;
+      return pHeight - localTopDown;
+    };
+
+    const updated = { ...obj, pageIdx: pIdx, pageHeight: pHeight };
+
+    delete updated.originalPageIdx;
+    delete updated._cumulativeShift;
+    delete updated._pageOffsets;
+    delete updated._pageHeights;
+    delete updated._totalH_collapsed;
+
+    if (obj.y !== undefined) updated.y = toLocalY(obj.y);
+    if (obj.y1 !== undefined) updated.y1 = toLocalY(obj.y1);
+    if (obj.y2 !== undefined) updated.y2 = toLocalY(obj.y2);
+    if (obj.tableBounds) {
+      updated.tableBounds = {
+        ...obj.tableBounds,
+        y1: toLocalY(obj.tableBounds.y1),
+        y2: toLocalY(obj.tableBounds.y2),
+      };
+    }
+    if (obj.points) {
+      updated.points = obj.points.map(p => ({ ...p, y: toLocalY(p.y) }));
+    }
+    if (obj.lines) {
+      updated.lines = obj.lines.map(l => ({ ...l, y: toLocalY(l.y) }));
+    }
+
+    return updated;
+  });
+};
+
+const shiftObjDown = (obj, amount) => {
+  let updatedObj = { ...obj };
+  let shifted = false;
+  console.log("This is the updated Obj: ", updatedObj);
+  if (updatedObj.y !== undefined) {
+    updatedObj.y -= amount;
+    shifted = true;
+  }
+  if (updatedObj.y1 !== undefined) {
+    updatedObj.y1 -= amount;
+    shifted = true;
+  }
+  if (updatedObj.y2 !== undefined) {
+    updatedObj.y2 -= amount;
+    shifted = true;
+  }
+  if (updatedObj.tableBounds) {
+    updatedObj.tableBounds = {
+      ...updatedObj.tableBounds,
+      y1: updatedObj.tableBounds.y1 - amount,
+      y2: updatedObj.tableBounds.y2 - amount,
+    };
+    shifted = true;
+  }
+  if (updatedObj.points) {
+    updatedObj.points = updatedObj.points.map(p => ({ ...p, y: p.y - amount }));
+    shifted = true;
+  }
+
+  return updatedObj;
+};
+
+
 const SinglePageView = ({
   pages = [],
   objects: incomingObjects = [],
@@ -54,15 +250,15 @@ const SinglePageView = ({
   onObjectsChange = null,
 }) => {
   // ── Layer 1: model ────────────────────────────────────────────────────────
-  const [objects, setObjects] = useState(incomingObjects);
+  const [objects, setObjects] = useState(() => convertToSinglePage(incomingObjects, pages));
   useEffect(() => {
-    setObjects(incomingObjects);
-  }, [incomingObjects]);
+    setObjects(convertToSinglePage(incomingObjects, pages));
+  }, [incomingObjects, pages]);
   // Notify parent whenever the model changes so the download always has
   // the latest edited text.
   useEffect(() => {
-    if (onObjectsChange) onObjectsChange(objects);
-  }, [objects, onObjectsChange]);
+    if (onObjectsChange) onObjectsChange(convertToMultiPage(objects, pages));
+  }, [objects, onObjectsChange, pages]);
 
   // ── Refs (non-render state) ───────────────────────────────────────────────
   const idCounter = useRef(0);
@@ -84,6 +280,7 @@ const SinglePageView = ({
   // no other input has happened since. Disarmed by any other key, click, or
   // a Backspace fired at offset > 0.
   const mergeArmedRef = useRef(false);
+  const scaleRef = useRef(1);
 
   // Init the off-screen 2D context once.
   useEffect(() => {
@@ -126,6 +323,8 @@ const SinglePageView = ({
   if (!resizeObserverRef.current && typeof ResizeObserver !== "undefined") {
     resizeObserverRef.current = new ResizeObserver((entries) => {
       let changed = false;
+      let heightDiffs = new Map();
+
       for (const entry of entries) {
         const id = entry.target.dataset.id;
         if (!id) continue;
@@ -133,11 +332,73 @@ const SinglePageView = ({
         // layout cursor treats heights.
         const h = entry.contentRect.height;
         const prev = measuredHeightsRef.current.get(id);
-        if (prev === undefined || Math.abs(prev - h) > 0.5) {
+        if (prev !== undefined && Math.abs(prev - h) > 0.5) {
+          heightDiffs.set(id, h - prev);
+          measuredHeightsRef.current.set(id, h);
+          changed = true;
+        } else if (prev === undefined) {
           measuredHeightsRef.current.set(id, h);
           changed = true;
         }
       }
+
+      if (heightDiffs.size > 0) {
+        setObjects((prevObjs) => {
+          let newObjs = [...prevObjs];
+          let updated = false;
+
+          for (const [id, diffPx] of heightDiffs) {
+            const idx = newObjs.findIndex((o) => o.id === id);
+            if (idx >= 0) {
+              const diffPt = diffPx / scaleRef.current;
+              // Shift all objects below it
+              for (let i = idx + 1; i < newObjs.length; i++) {
+                const obj = newObjs[i];
+                let updatedObj = { ...obj };
+                let shifted = false;
+
+                // Shift standard Y coordinate (paragraphs, images, rects)
+                if (updatedObj.y !== undefined) {
+                  updatedObj.y -= diffPt;
+                  shifted = true;
+                }
+                // Shift line coordinates
+                if (updatedObj.y1 !== undefined) {
+                  updatedObj.y1 -= diffPt;
+                  shifted = true;
+                }
+                if (updatedObj.y2 !== undefined) {
+                  updatedObj.y2 -= diffPt;
+                  shifted = true;
+                }
+                // Shift table cell bounds if it belongs to a table
+                if (updatedObj.tableBounds) {
+                  updatedObj.tableBounds = {
+                    ...updatedObj.tableBounds,
+                    y1: updatedObj.tableBounds.y1 - diffPt,
+                    y2: updatedObj.tableBounds.y2 - diffPt,
+                  };
+                  shifted = true;
+                }
+                // Shift custom polygon/path points
+                if (updatedObj.points) {
+                  updatedObj.points = updatedObj.points.map(p => ({ ...p, y: p.y - diffPt }));
+                  shifted = true;
+                }
+
+                if (shifted) {
+                  newObjs[i] = updatedObj;
+                  updated = true;
+                }
+              }
+            }
+          }
+          // Page-boundary normalization removed since the whole document is treated as one single page.
+
+          return updated ? newObjs : prevObjs;
+        });
+      }
+
       if (changed) bumpHeightTick();
     });
   }
@@ -150,15 +411,22 @@ const SinglePageView = ({
   );
 
   // ── Layer 2: scale + layout (memoized) ────────────────────────────────────
+  const totalDocHeight = useMemo(() => {
+    return pages.reduce((sum, p) => sum + (p?.dimensions?.height ?? 792), 0);
+  }, [pages]);
+
+  const maxDocWidth = useMemo(() => {
+    return pages.reduce((max, p) => Math.max(max, p?.dimensions?.width ?? 612), 0);
+  }, [pages]);
+
   const pageWidthsByIdx = useMemo(
-    () => pages.map((p) => p?.dimensions?.width ?? DEFAULT_PAGE_WIDTH_PT),
-    [pages]
+    () => [maxDocWidth],
+    [maxDocWidth]
   );
 
   const pageHeightsByIdx = useMemo(
-    // Force standard 11 inches (792pt) for every page height
-    () => pages.map(() => 792),
-    [pages]
+    () => [totalDocHeight],
+    [totalDocHeight]
   );
 
   const scale = useMemo(() => {
@@ -166,10 +434,12 @@ const SinglePageView = ({
       (m, w) => Math.max(m, w),
       DEFAULT_PAGE_WIDTH_PT
     );
-    return CANVAS_WIDTH / maxW;
+    const s = CANVAS_WIDTH / maxW;
+    scaleRef.current = s;
+    return s;
   }, [pageWidthsByIdx]);
 
-  const { layout, separators, totalHeight } = useMemo(
+  const { layout, separators, gapMarkers, totalHeight } = useMemo(
     () =>
       layoutObjects({
         objects,
@@ -273,6 +543,7 @@ const SinglePageView = ({
     if (pending.size === 0) return;
     const snapshot = new Map(pending);
     pending.clear();
+    //prev is previous state of objects 
     setObjects((prev) => {
       let changed = false;
       const next = prev.map((b) => {
@@ -287,11 +558,10 @@ const SinglePageView = ({
           const ctx = 15;
           const oldSnip = oldT.slice(Math.max(0, diffAt - ctx), diffAt + ctx);
           const newSnip = newT.slice(Math.max(0, diffAt - ctx), diffAt + ctx);
-          console.log(
-            `[PDF-Editor] FLUSH  id=${b.id}  chars ${oldT.length}→${newT.length}  diff@${diffAt}  "…${oldSnip}…" → "…${newSnip}…"`
-          );
+
           return { ...b, text: liveText };
         }
+
         return b;
       });
       return changed ? next : prev;
@@ -344,6 +614,13 @@ const SinglePageView = ({
     const merged = prevText + gap + curText;
     const seamOffset = prevText.length + gap.length;
 
+    // Calculate height of the block being removed to shift elements up
+    let curDomHeight = measuredHeightsRef.current.get(cur.id);
+    if (!curDomHeight) {
+      curDomHeight = (cur.fontSize || 12) * scaleRef.current * 1.2;
+    }
+    const diffPt = curDomHeight / scaleRef.current;
+
     console.group('[PDF-Editor] BACKSPACE-MERGE');
     console.log('removed  :', `id=${cur.id}  "${curText.slice(0, 40)}"`);
     console.log('merged → :', `id=${prev.id}  "${merged.slice(0, 60)}"`);
@@ -357,6 +634,44 @@ const SinglePageView = ({
       const next = arr.slice();
       next[prevIdx] = { ...next[prevIdx], text: merged };
       next.splice(curIdx, 1);
+
+      // Shift all objects below the deleted one UP to fill the gap.
+      // In PDF coordinates (bottom-up), moving UP means increasing y.
+      for (let i = curIdx; i < next.length; i++) {
+        const obj = next[i];
+        let updatedObj = { ...obj };
+        let shifted = false;
+
+        if (updatedObj.y !== undefined) {
+          updatedObj.y += diffPt;
+          shifted = true;
+        }
+        if (updatedObj.y1 !== undefined) {
+          updatedObj.y1 += diffPt;
+          shifted = true;
+        }
+        if (updatedObj.y2 !== undefined) {
+          updatedObj.y2 += diffPt;
+          shifted = true;
+        }
+        if (updatedObj.tableBounds) {
+          updatedObj.tableBounds = {
+            ...updatedObj.tableBounds,
+            y1: updatedObj.tableBounds.y1 + diffPt,
+            y2: updatedObj.tableBounds.y2 + diffPt,
+          };
+          shifted = true;
+        }
+        if (updatedObj.points) {
+          updatedObj.points = updatedObj.points.map(p => ({ ...p, y: p.y + diffPt }));
+          shifted = true;
+        }
+
+        if (shifted) {
+          next[i] = updatedObj;
+        }
+      }
+
       return next;
     });
 
@@ -366,7 +681,20 @@ const SinglePageView = ({
 
   const handleEnterSplit = (curIdx, el) => {
     const cur = objects[curIdx];
-    if (!TEXT_TYPES.has(cur.type)) return;
+    const fontSize = cur.fontSize || 12;
+    const lineHeight = fontSize * 1.2;
+
+    if (!TEXT_TYPES.has(cur.type)) {
+      setObjects((arr) => {
+        const next = arr.slice();
+        // Move the object itself and all objects under it down by 1 line height
+        for (let i = curIdx; i < next.length; i++) {
+          next[i] = shiftObjDown(next[i], lineHeight);
+        }
+        return next;
+      });
+      return;
+    }
 
     const offset = getCaretCharOffset(el);
     const text = el.textContent;
@@ -383,12 +711,23 @@ const SinglePageView = ({
     dbgBlock('paragraph BEFORE split', cur);
     console.groupEnd();
 
+    // Prevent the ResizeObserver from seeing the paragraph shrink and pulling things back up
+    if (measuredHeightsRef && measuredHeightsRef.current) {
+      measuredHeightsRef.current.delete(cur.id);
+    }
     pendingTextRef.current.delete(cur.id);
 
     setObjects((arr) => {
       const next = arr.slice();
+
+      // Shift all objects below the current index down by 1 line height
+      for (let i = curIdx + 1; i < next.length; i++) {
+        next[i] = shiftObjDown(next[i], lineHeight);
+      }
+
       next[curIdx] = { ...next[curIdx], text: before };
-      next.splice(curIdx + 1, 0, {
+
+      const newBlock = {
         id: newId,
         type: "paragraph",
         pageIdx: cur.pageIdx,
@@ -401,7 +740,19 @@ const SinglePageView = ({
         color: cur.color ?? null,
         inTable: cur.inTable ?? false,
         tableBounds: cur.tableBounds ?? null,
-      });
+      };
+
+      if (cur.y !== undefined) {
+        newBlock.y = cur.y - lineHeight;
+      }
+      if (cur.y1 !== undefined) {
+        newBlock.y1 = cur.y1 - lineHeight;
+      }
+      if (cur.y2 !== undefined) {
+        newBlock.y2 = cur.y2 - lineHeight;
+      }
+
+      next.splice(curIdx + 1, 0, newBlock);
       return next;
     });
 
@@ -429,6 +780,7 @@ const SinglePageView = ({
       // Second consecutive Backspace at offset 0 — merge.
       flushPending();
       const idx = objects.findIndex((b) => b.id === id);
+      console.log("This is idx: ");
       if (idx >= 0) handleBackspaceAtStart(idx);
       return;
     }
@@ -440,7 +792,7 @@ const SinglePageView = ({
 
     if (e.key === "Enter") {
       e.preventDefault();
-      flushPending();
+      // flushPending();
       const idx = objects.findIndex((b) => b.id === id);
       if (idx >= 0) handleEnterSplit(idx, e.currentTarget);
     }
@@ -537,7 +889,7 @@ const SinglePageView = ({
     const handleContainerClick = (e) => {
       const canvasRect = e.currentTarget.closest("#pdf-single-canvas").getBoundingClientRect();
       const clickX = e.clientX - canvasRect.left;
-      const leftside  = rect.left + 0.3 * rect.width;
+      const leftside = rect.left + 0.3 * rect.width;
       const rightside = rect.left + 0.7 * rect.width;
 
       if (clickX < leftside) {
@@ -584,6 +936,57 @@ const SinglePageView = ({
         contentEditable
         suppressContentEditableWarning
         onClick={handleContainerClick}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            const sel = window.getSelection();
+            if (sel && sel.rangeCount > 0) {
+              const range = sel.getRangeAt(0);
+              const isLeft =
+                (range.startContainer === containerRef.current && range.startOffset === 0) ||
+                (range.startContainer.childNodes[range.startOffset] === imgRef.current);
+
+              if (isLeft) {
+                const imgIdx = objects.findIndex((o) => o.id === block.id);
+                if (imgIdx >= 0) {
+                  const defaultLineHeight = 14; // PDF points
+                  const newId = `n${idCounter.current++}`;
+
+                  setObjects((prev) => {
+                    const next = prev.slice();
+
+                    // Shift the image and all objects below it down by 1 line height
+                    for (let i = imgIdx; i < next.length; i++) {
+                      next[i] = shiftObjDown(next[i], defaultLineHeight);
+                    }
+
+                    // Create a new empty paragraph block at the original position of the image
+                    const newBlock = {
+                      id: newId,
+                      type: "paragraph",
+                      pageIdx: block.pageIdx,
+                      text: "",
+                      x: block.x,
+                      fontSize: 12,
+                      lines: [],
+                    };
+
+                    if (block.y !== undefined) {
+                      newBlock.y = block.y;
+                    }
+
+                    // Insert the new paragraph block BEFORE the image in the objects array
+                    next.splice(imgIdx, 0, newBlock);
+                    return next;
+                  });
+
+                  // Focus the newly created paragraph
+                  caretIntentRef.current = { id: newId, offset: 0 };
+                }
+              }
+            }
+          }
+        }}
         style={{
           position: "absolute",
           left: rect.left,
@@ -637,30 +1040,30 @@ const SinglePageView = ({
   // ── Shape blocks ──────────────────────────────────────────────────────
   const ShapeBlock = ({ block, rect, scale }) => {
     const stroke = toCssColor(block.strokeColor, 'none');
-    const fill   = toCssColor(block.fillColor,   'none');
-    const lw     = Math.max(0.5, (block.lineWidth ?? 1) * scale);
+    const fill = toCssColor(block.fillColor, 'none');
+    const lw = Math.max(0.5, (block.lineWidth ?? 1) * scale);
 
     if (block.shapeKind === 'line') {
       // rect carries the bounding box; recompute SVG-space endpoints from
       // the raw PDF coords stored in the layout entry.
-      const pH     = rect._pageHeight ?? (block.pageHeight ?? 792);
-      const ps     = rect._pageStart  ?? 0;
-      const sc     = rect._scale      ?? scale;
-      const svgX1  = (block.x1) * sc - rect.left;
-      const svgY1  = ps + (pH - block.y1) * sc - rect.top;
-      const svgX2  = (block.x2) * sc - rect.left;
-      const svgY2  = ps + (pH - block.y2) * sc - rect.top;
-      const w      = Math.max(rect.width  + lw * 2, 4);
-      const h      = Math.max(rect.height + lw * 2, 4);
-      const offX   = lw;
-      const offY   = lw;
+      const pH = rect._pageHeight ?? (block.pageHeight ?? 792);
+      const ps = rect._pageStart ?? 0;
+      const sc = rect._scale ?? scale;
+      const svgX1 = (block.x1) * sc - rect.left;
+      const svgY1 = ps + (pH - block.y1) * sc - rect.top;
+      const svgX2 = (block.x2) * sc - rect.left;
+      const svgY2 = ps + (pH - block.y2) * sc - rect.top;
+      const w = Math.max(rect.width + lw * 2, 4);
+      const h = Math.max(rect.height + lw * 2, 4);
+      const offX = lw;
+      const offY = lw;
       return (
         <svg
           style={{
             position: 'absolute',
-            top:    rect.top  - offY,
-            left:   rect.left - offX,
-            width:  w,
+            top: rect.top - offY,
+            left: rect.left - offX,
+            width: w,
             height: h,
             overflow: 'visible',
             pointerEvents: 'none',
@@ -683,14 +1086,14 @@ const SinglePageView = ({
     if (block.shapeKind === 'rect') {
       const hasStroke = block.strokeColor !== null;
       const offset = hasStroke ? lw / 2 : 0;
-      
+
       return (
         <svg
           style={{
             position: 'absolute',
-            top:    rect.top - offset,
-            left:   rect.left - offset,
-            width:  rect.width + (hasStroke ? lw : 0),
+            top: rect.top - offset,
+            left: rect.left - offset,
+            width: rect.width + (hasStroke ? lw : 0),
             height: rect.height + (hasStroke ? lw : 0),
             overflow: 'visible',
             pointerEvents: 'none',
@@ -711,10 +1114,10 @@ const SinglePageView = ({
     }
 
     if (block.shapeKind === 'path' && block.points?.length) {
-      const pH  = rect._pageHeight ?? (block.pageHeight ?? 792);
-      const ps  = rect._pageStart  ?? 0;
-      const sc  = rect._scale      ?? scale;
-      const mX  = rect._minX ?? 0;
+      const pH = rect._pageHeight ?? (block.pageHeight ?? 792);
+      const ps = rect._pageStart ?? 0;
+      const sc = rect._scale ?? scale;
+      const mX = rect._minX ?? 0;
       const svgPts = block.points.map(p => [
         (p.x - mX) * sc,
         ps + (pH - p.y) * sc - rect.top,
@@ -726,9 +1129,9 @@ const SinglePageView = ({
         <svg
           style={{
             position: 'absolute',
-            top:    rect.top,
-            left:   rect.left,
-            width:  rect.width  + lw * 2,
+            top: rect.top,
+            left: rect.left,
+            width: rect.width + lw * 2,
             height: rect.height + lw * 2,
             overflow: 'visible',
             pointerEvents: 'none',
@@ -907,18 +1310,6 @@ const EditableBlock = ({
     const domText = el?.textContent ?? '';
     const modelText = block.text ?? '';
     const domH = measuredHeightsRef?.current?.get(block.id);
-    console.group(`[PDF-Editor] FOCUS  id=${block.id}  type=${block.type}`);
-    console.log('model text :', `"${modelText.slice(0, 70)}${modelText.length > 70 ? '…' : ''}"`);
-    console.log('DOM text   :', `"${domText.slice(0, 70)}${domText.length > 70 ? '…' : ''}"`);
-    console.log('model === DOM :', modelText === domText);
-    console.log('lineCount (original lines[]) :', block.lines?.length ?? '(runtime block)');
-    console.log('fontSize   :', block.fontSize, '  x:', block.x, '  pageIdx:', block.pageIdx);
-    if (domH !== undefined) {
-      console.log('DOM height (measured):', domH.toFixed(1), 'px');
-    } else {
-      console.warn('DOM height: not yet in measuredHeights — ResizeObserver may not have fired');
-    }
-    console.groupEnd();
   };
 
   return (
