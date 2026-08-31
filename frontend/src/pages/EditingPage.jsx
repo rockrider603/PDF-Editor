@@ -4,7 +4,7 @@ import { ArrowLeft, Loader2 } from "lucide-react";
 import EditToolbar from "../components/EditToolbar";
 import SinglePageView from "../components/SinglePageView";
 import { usePDFStore } from "../store/usePDFStore";
-import { PdfDocument } from "pdf-parser";
+import { PdfDocument } from "../../../pdf-parser/PdfDocument";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { buildObjects } from "../lib/buildObjects";
 
@@ -215,8 +215,8 @@ const EditingPage = () => {
 
         for (const shape of shapeObjects) {
           const strokeColor = getPdfLibColor(shape.strokeColor);
-          const fillColor   = getPdfLibColor(shape.fillColor);
-          const lw          = shape.lineWidth ?? 1;
+          const fillColor = getPdfLibColor(shape.fillColor);
+          const lw = shape.lineWidth ?? 1;
 
           if (shape.shapeKind === 'line') {
             pdfPage.drawLine({
